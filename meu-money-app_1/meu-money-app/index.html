@@ -235,8 +235,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.0";
-const APP_VERSION_DATA="28/07/2026 · nuvem";
+const APP_VERSION="3.1";
+const APP_VERSION_DATA="28/07/2026 · nuvem + acessos";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -251,7 +251,7 @@ const TIPOS_CONTA=[
   {v:"cartao",n:"Cartão de crédito",c:"#B23A48"},
   {v:"investimento",n:"Investimento",c:"#5B4FB0"}
 ];
-function novoEstado(){return{contas:[],lancamentos:[],categorias:CAT_PADRAO.map(c=>({...c})),config:{cotacaoUSD:5.00,cotacaoUSDData:new Date().toISOString().slice(0,10)},criado:Date.now()}}
+function novoEstado(){return{contas:[],lancamentos:[],categorias:CAT_PADRAO.map(c=>({...c})),config:{cotacaoUSD:5.00,cotacaoUSDData:new Date().toISOString().slice(0,10)},criado:Date.now(),usuarios:[],acessos:[],relatoriosFavoritos:[]}}
 function migrarCategorias(s){
   if(!s.categorias||!s.categorias.length){s.categorias=CAT_PADRAO.map(c=>({...c}));}
   else if(typeof s.categorias[0]==="string"){
@@ -264,11 +264,14 @@ function migrar(s){
   s.config=s.config||{};
   if(typeof s.config.cotacaoUSD!=="number"||!s.config.cotacaoUSD)s.config.cotacaoUSD=5.00;
   s.config.cotacaoUSDData=s.config.cotacaoUSDData||new Date().toISOString().slice(0,10);
-  (s.contas||[]).forEach(c=>{if(!c.moeda)c.moeda="BRL";});
+  (s.contas||[]).forEach(c=>{if(!c.moeda)c.moeda="BRL";if(typeof c.pessoal!=="boolean")c.pessoal=false;});
   s.relatoriosFavoritos=s.relatoriosFavoritos||[];
   s.usuarios=s.usuarios||[];
+  s.acessos=s.acessos||[]; // registro de acessos por e-mail: {email,nome,role,bloqueado}
   return s;
 }
+/* Localiza (ou retorna null) o acesso de um e-mail no registro da nuvem. */
+function acessoDe(email){email=(email||"").trim().toLowerCase();return(state.acessos||[]).find(a=>(a.email||"").trim().toLowerCase()===email)||null;}
 let state=carregar();
 function carregar(){try{const r=localStorage.getItem(KEY);if(r){return migrar(JSON.parse(r));}}catch(e){console.warn(e);}return novoEstado();}
 function categoriasPorTipo(tipo){return state.categorias.filter(c=>c.tipo===tipo||c.tipo==="ambos").map(c=>c.nome);}
@@ -278,11 +281,26 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 
 /* ============ Autenticação e permissões ============ */
 let sessao=null; // {id,nome,login,role} — só em memória; pede login a cada abertura
-const ROLES={admin:"Administrador",editor:"Operador",leitor:"Consulta"};
-function cyrb53(str,seed){seed=seed||0;let h1=0xdeadbeef^seed,h2=0x41c6ce57^seed;for(let i=0,ch;i<str.length;i++){ch=str.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677);}h1=Math.imul(h1^(h1>>>16),2246822507);h1^=Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507);h2^=Math.imul(h1^(h1>>>13),3266489909);return 4294967296*(2097151&h2)+(h1>>>0);}
-function hashSenha(senha,salt){let s=salt+"|"+senha;for(let i=0;i<3000;i++)s=cyrb53(s,i)+":"+i;return cyrb53(s,7)+"_"+cyrb53(salt+senha,99);}
+const ROLES={admin:"Administrador",operador:"Operador",consulta:"Consulta"};
+/* E-mail do DONO: sempre administrador, nunca pode ser bloqueado ou rebaixado. */
+const OWNER_EMAIL="luizfarias@acoforte.com.br";
+const ehOwner=email=>(email||"").trim().toLowerCase()===OWNER_EMAIL;
 function ehAdmin(){return !!sessao&&sessao.role==="admin";}
-function podeEditar(){return !!sessao&&(sessao.role==="admin"||sessao.role==="editor");}
+function podeEditar(){return !!sessao&&(sessao.role==="admin"||sessao.role==="operador");}
+
+/* ---- Visibilidade das contas pessoais ----
+   Contas marcadas como pessoais (co.pessoal===true) só aparecem para o admin.
+   Estas funções são usadas em TODAS as telas para filtrar contas e lançamentos. */
+function contaEhVisivel(id){const c=contaPorId(id);if(!c)return true;return ehAdmin()||!c.pessoal;}
+function contasVisiveis(){return ehAdmin()?state.contas:state.contas.filter(c=>!c.pessoal);}
+function lancEhVisivel(l){
+  if(ehAdmin())return true;
+  if(l.tipo==="transferencia")return contaEhVisivel(l.contaId)||contaEhVisivel(l.contaDestinoId);
+  return contaEhVisivel(l.contaId);
+}
+function lancamentosVisiveis(){return state.lancamentos.filter(lancEhVisivel);}
+/* Nome da conta a exibir: mascara a conta pessoal (ex.: o outro lado de uma transferência) para quem não é admin. */
+function nomeContaVis(id){const c=contaPorId(id);if(!c)return"—";return contaEhVisivel(id)?c.nome:"Conta pessoal";}
 
 /* ============ Utilidades ============ */
 const money=n=>new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(n||0);
@@ -318,7 +336,7 @@ function saldoConta(id){
 }
 function patrimonio(ateISO){
   let total=0;
-  for(const c of state.contas){
+  for(const c of contasVisiveis()){
     let s=c.saldoInicial||0;
     for(const l of state.lancamentos){
       if(ateISO&&l.data>ateISO)continue;
@@ -365,14 +383,14 @@ function vPainel(c,sub,ta){
   const pat=patrimonio();
   const ym=mesDe(hojeISO());
   let rec=0,desp=0;
-  for(const l of state.lancamentos){
+  for(const l of lancamentosVisiveis()){
     if(l.tipo==="transferencia")continue;
     if(mesDe(l.data)===ym){ const v=emReal(l.valor,moedaConta(l.contaId)); if(v>0)rec+=v; else desp+=v; }
   }
   sub.textContent=nomeMes(ym).replace("/"," / 20");
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalLancamento()">+ Novo lançamento</button>`:"";
 
-  if(state.contas.length===0){
+  if(contasVisiveis().length===0){
     c.innerHTML=`<div class="panel"><div class="empty">
       <div class="em-ic">◧</div><h4>Bem-vindo ao Meu Money</h4>
       <p>Comece criando suas contas (banco, cartão, carteira) e depois lance suas entradas e saídas —<br>ou importe direto o extrato do banco em OFX/CSV.</p>
@@ -383,8 +401,8 @@ function vPainel(c,sub,ta){
     return;
   }
 
-  const temUSD=state.contas.some(co=>(co.moeda||"BRL")==="USD");
-  const recentes=lancamentosOrdenados().slice(0,8);
+  const temUSD=contasVisiveis().some(co=>(co.moeda||"BRL")==="USD");
+  const recentes=lancamentosVisiveis().sort((a,b)=>b.data<a.data?-1:b.data>a.data?1:(b._t||0)-(a._t||0)).slice(0,8);
   c.innerHTML=`
    ${temUSD?cardCotacao():""}
    <div class="cards">
@@ -396,7 +414,7 @@ function vPainel(c,sub,ta){
    <div class="panel">
      <div class="panel-h"><h3>Saldo das contas</h3><button class="btn sm" onclick="irPara('contas')">Ver todas</button></div>
      <div class="panel-b"><table><tbody>
-       ${state.contas.map(co=>{const m=co.moeda||"BRL";const s=saldoConta(co.id);return`<tr><td><span class="acctdot" style="background:${corTipo(co.tipo)}"></span>${esc(co.nome)} <span class="tag" style="margin-left:6px">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}</span></td>
+       ${contasVisiveis().map(co=>{const m=co.moeda||"BRL";const s=saldoConta(co.id);return`<tr><td><span class="acctdot" style="background:${corTipo(co.tipo)}"></span>${esc(co.nome)}${co.pessoal?' <span class="tag b" title="Conta pessoal">👤</span>':""} <span class="tag" style="margin-left:6px">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}</span></td>
          <td class="r num ${s>=0?'':'neg'}">${moneyM(s,m)}${m==="USD"?`<div style="font-size:11.5px;color:var(--muted)">${money(emReal(s,m))}</div>`:""}</td></tr>`;}).join("")}
      </tbody></table></div>
    </div>
@@ -431,13 +449,13 @@ function modalCotacao(){
 let filtroL={busca:"",conta:"",mes:"",cat:""};
 function vLancamentos(c,sub,ta){
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalLancamento()">+ Novo lançamento</button>`:"";
-  if(state.contas.length===0){c.innerHTML=avisoSemConta();return;}
-  const meses=[...new Set(state.lancamentos.map(l=>mesDe(l.data)))].sort().reverse();
-  const cats=[...new Set(state.lancamentos.map(l=>l.categoria).filter(Boolean))].sort();
+  if(contasVisiveis().length===0){c.innerHTML=avisoSemConta();return;}
+  const meses=[...new Set(lancamentosVisiveis().map(l=>mesDe(l.data)))].sort().reverse();
+  const cats=[...new Set(lancamentosVisiveis().map(l=>l.categoria).filter(Boolean))].sort();
   c.innerHTML=`
    <div class="toolbar">
      <input type="text" class="grow" id="fbusca" placeholder="Buscar em descrição e memo..." value="${esc(filtroL.busca)}">
-     <select id="fconta"><option value="">Todas as contas</option>${state.contas.map(co=>`<option value="${co.id}" ${filtroL.conta===co.id?"selected":""}>${esc(co.nome)}</option>`).join("")}</select>
+     <select id="fconta"><option value="">Todas as contas</option>${contasVisiveis().map(co=>`<option value="${co.id}" ${filtroL.conta===co.id?"selected":""}>${esc(co.nome)}</option>`).join("")}</select>
      <select id="fmes"><option value="">Todos os meses</option>${meses.map(m=>`<option value="${m}" ${filtroL.mes===m?"selected":""}>${nomeMes(m)}</option>`).join("")}</select>
      <select id="fcat"><option value="">Todas categorias</option>${cats.map(k=>`<option value="${esc(k)}" ${filtroL.cat===k?"selected":""}>${esc(k)}</option>`).join("")}</select>
    </div>
@@ -447,7 +465,7 @@ function vLancamentos(c,sub,ta){
   renderListaLanc();
 }
 function lancsFiltrados(){
-  return lancamentosOrdenados().filter(l=>{
+  return lancamentosOrdenados().filter(lancEhVisivel).filter(l=>{
     if(filtroL.conta&&l.contaId!==filtroL.conta&&l.contaDestinoId!==filtroL.conta)return false;
     if(filtroL.mes&&mesDe(l.data)!==filtroL.mes)return false;
     if(filtroL.cat&&l.categoria!==filtroL.cat)return false;
@@ -469,14 +487,14 @@ function tabelaLanc(arr){
      const co=contaPorId(l.contaId);
      if(l.tipo==="transferencia"){
        const cd=contaPorId(l.contaDestinoId);
-       return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"Transferência")}<div style="font-size:12px;color:var(--muted)">${esc(co?co.nome:"?")} → ${esc(cd?cd.nome:"?")}${l.memo?" · "+esc(l.memo):""}</div></td>
+       return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"Transferência")}<div style="font-size:12px;color:var(--muted)">${esc(nomeContaVis(l.contaId))} → ${esc(nomeContaVis(l.contaDestinoId))}${l.memo?" · "+esc(l.memo):""}</div></td>
        <td class="hide"><span class="tag b">Transferência</span></td><td class="hide num" style="color:var(--muted)">—</td>
        <td class="r num">${moneyM(Math.abs(l.valor),moedaConta(l.contaId))}</td>
        <td class="r">${podeEditar()?`<div class="row-actions"><button class="iconbtn" onclick="modalLancamento('${l.id}')">✎</button><button class="iconbtn" onclick="excluirLanc('${l.id}')">🗑</button></div>`:""}</td></tr>`;
      }
      return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td>
        <td class="hide">${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:""}</td>
-       <td class="hide"><span class="acctdot" style="background:${corTipo(co?co.tipo:'')}"></span>${esc(co?co.nome:"—")}</td>
+       <td class="hide"><span class="acctdot" style="background:${corTipo(co?co.tipo:'')}"></span>${esc(nomeContaVis(l.contaId))}</td>
        <td class="r num ${l.valor>=0?'pos':'neg'}">${moneyM(l.valor,moedaConta(l.contaId))}</td>
        <td class="r">${podeEditar()?`<div class="row-actions"><button class="iconbtn" onclick="modalLancamento('${l.id}')">✎</button><button class="iconbtn" onclick="excluirLanc('${l.id}')">🗑</button></div>`:""}</td></tr>`;
    }).join("")}
@@ -487,13 +505,13 @@ function excluirLanc(id){if(!podeEditar())return;if(confirm("Excluir este lança
 /* ---------- CONTAS ---------- */
 function vContas(c,sub,ta){
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalConta()">+ Nova conta</button>`:"";
-  if(state.contas.length===0){
+  if(contasVisiveis().length===0){
     c.innerHTML=`<div class="panel"><div class="empty"><div class="em-ic">▤</div><h4>Nenhuma conta cadastrada</h4><p>Crie contas para banco, cartão, dinheiro ou investimentos.</p><div style="margin-top:14px"><button class="btn primary" onclick="modalConta()">Criar conta</button></div></div></div>`;return;
   }
-  c.innerHTML=`<div class="cards">${state.contas.map(co=>{
+  c.innerHTML=`<div class="cards">${contasVisiveis().map(co=>{
     const m=co.moeda||"BRL";const s=saldoConta(co.id);
     return`<div class="card clickable" onclick="abrirConta('${co.id}')"><div style="display:flex;justify-content:space-between;align-items:start">
-      <div><div class="lbl" style="color:${corTipo(co.tipo)}">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}</div>
+      <div><div class="lbl" style="color:${corTipo(co.tipo)}">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}${co.pessoal?" · 👤 Pessoal":""}</div>
       <div style="font-weight:600;margin-top:4px;font-size:16px">${esc(co.nome)}</div>
       ${co.instituicao?`<div style="font-size:12.5px;color:var(--muted)">${esc(co.instituicao)}</div>`:""}</div>
       <span style="color:var(--muted-soft);font-size:20px;line-height:1">›</span>
@@ -507,6 +525,7 @@ let contaAbertaId=null;
 let importPresetConta=null;
 function importarParaConta(id){importPresetConta=id;irPara("importar");}
 function abrirConta(id){
+  if(!contaEhVisivel(id)){irPara("contas");return;} // não-admin não abre conta pessoal
   contaAbertaId=id;viewAtual="contaDetalhe";
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("active",b.dataset.view==="contas"));
   document.getElementById("vtitle").textContent="Conta";fecharMenu();render();
@@ -528,7 +547,7 @@ function movimentosConta(id){
 }
 function vContaDetalhe(c,sub,ta){
   const co=contaPorId(contaAbertaId);
-  if(!co){irPara("contas");return;}
+  if(!co||!contaEhVisivel(co.id)){irPara("contas");return;}
   const m=co.moeda||"BRL";const s=saldoConta(co.id);
   sub.textContent=nomeTipo(co.tipo)+(m==="USD"?" · US$":"");
   ta.innerHTML=podeEditar()?`<button class="btn" onclick="importarParaConta('${co.id}')">↧ Importar extrato</button> <button class="btn brass" onclick="modalLancamento(null,'${co.id}')">+ Novo lançamento</button>`:"";
@@ -549,7 +568,7 @@ function tabelaConta(movs,m){
      const transf=l.tipo==="transferencia";
      const outra=transf?(l.contaId===contaAbertaId?contaPorId(l.contaDestinoId):contaPorId(l.contaId)):null;
      return`<tr><td class="num">${fmtData(l.data)}</td>
-       <td>${esc(l.descricao||(transf?"Transferência":"(sem descrição)"))}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}${transf?`<div style="font-size:12px;color:var(--muted)">${l.contaId===contaAbertaId?"→ ":"← "}${esc(outra?outra.nome:"?")}</div>`:""}</td>
+       <td>${esc(l.descricao||(transf?"Transferência":"(sem descrição)"))}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}${transf?`<div style="font-size:12px;color:var(--muted)">${l.contaId===contaAbertaId?"→ ":"← "}${esc(outra?nomeContaVis(outra.id):"?")}</div>`:""}</td>
        <td class="hide">${l.categoria?`<span class="tag ${efeito>=0?'g':'r'}">${esc(l.categoria)}</span>`:""}</td>
        <td class="r num ${efeito>=0?'pos':'neg'}">${moneyM(efeito,m)}</td>
        <td class="r num hide" style="color:var(--muted)">${moneyM(saldo,m)}</td>
@@ -569,7 +588,7 @@ function excluirConta(id){
 /* ---------- CATEGORIAS ---------- */
 function vCategorias(c,sub,ta){
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalCategoria()">+ Nova categoria</button>`:"";
-  const uso=nome=>state.lancamentos.filter(l=>l.categoria===nome).length;
+  const uso=nome=>lancamentosVisiveis().filter(l=>l.categoria===nome).length;
   const grupo=(titulo,tipo,cor)=>{
     const arr=state.categorias.map((k,i)=>({k,i})).filter(o=>o.k.tipo===tipo).sort((a,b)=>a.k.nome.localeCompare(b.k.nome,"pt-BR"));
     return`<div class="panel"><div class="panel-h"><h3>${titulo}</h3><span style="font-size:13px;color:var(--muted)">${arr.length}</span></div>
@@ -619,12 +638,12 @@ function excluirCategoria(idx){
 
 /* ---------- PATRIMÔNIO ---------- */
 function vPatrimonio(c,sub,ta){
-  const invs=state.contas.filter(co=>co.tipo==="investimento");
+  const invs=contasVisiveis().filter(co=>co.tipo==="investimento");
   ta.innerHTML=podeEditar()?`<button class="btn" onclick="modalConta(null,'investimento')">+ Investimento</button>`:"";
   const pat=patrimonio();
-  const ativos=state.contas.filter(co=>saldoContaReal(co.id)>=0).reduce((a,co)=>a+saldoContaReal(co.id),0);
-  const passivos=state.contas.filter(co=>saldoContaReal(co.id)<0).reduce((a,co)=>a+saldoContaReal(co.id),0);
-  const temUSD=state.contas.some(co=>(co.moeda||"BRL")==="USD");
+  const ativos=contasVisiveis().filter(co=>saldoContaReal(co.id)>=0).reduce((a,co)=>a+saldoContaReal(co.id),0);
+  const passivos=contasVisiveis().filter(co=>saldoContaReal(co.id)<0).reduce((a,co)=>a+saldoContaReal(co.id),0);
+  const temUSD=contasVisiveis().some(co=>(co.moeda||"BRL")==="USD");
   // série mensal últimos 12 meses
   const serie=serieMensalPatrimonio(12);
   c.innerHTML=`
@@ -671,9 +690,9 @@ function modalAtualizarValor(id){
 let relAtual=null; // config do último relatório gerado
 let relPend=null;  // config pendente (ex.: ao carregar favorito) p/ pré-marcar a tela
 function vRelatorios(c,sub,ta){
-  if(state.lancamentos.length===0){c.innerHTML=`<div class="panel"><div class="empty"><div class="em-ic">◔</div><h4>Sem dados ainda</h4><p>Lance ou importe movimentações para gerar relatórios.</p></div></div>`;return;}
-  const lancs=state.lancamentos.filter(l=>l.tipo!=="transferencia");
-  const contas=state.contas;
+  if(lancamentosVisiveis().length===0){c.innerHTML=`<div class="panel"><div class="empty"><div class="em-ic">◔</div><h4>Sem dados ainda</h4><p>Lance ou importe movimentações para gerar relatórios.</p></div></div>`;return;}
+  const lancs=lancamentosVisiveis().filter(l=>l.tipo!=="transferencia");
+  const contas=contasVisiveis();
   const cats=[...new Set(lancs.map(l=>l.categoria||"(sem categoria)"))].sort((a,b)=>a.localeCompare(b,"pt-BR"));
   const pagos=[...new Set(lancs.map(l=>l.descricao||"(sem descrição)"))].sort((a,b)=>a.localeCompare(b,"pt-BR"));
   const p=relPend||{};
@@ -748,7 +767,7 @@ function lerConfigRel(){
 }
 function gerarRelatorio(){relAtual=lerConfigRel();renderRelatorio();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
 function lancsRelatorio(r){
-  return lancamentosOrdenados().filter(l=>l.tipo!=="transferencia").filter(l=>{
+  return lancamentosOrdenados().filter(lancEhVisivel).filter(l=>l.tipo!=="transferencia").filter(l=>{
     if(r.de&&l.data<r.de)return false;
     if(r.ate&&l.data>r.ate)return false;
     if(r.contas&&!r.contas.includes(l.contaId))return false;
@@ -819,12 +838,12 @@ function excluirFavoritoRel(i){
 let importBuffer=null;
 function vImportar(c,sub,ta){
   if(!podeEditar()){c.innerHTML=semPermissao();return;}
-  if(state.contas.length===0){c.innerHTML=avisoSemConta();return;}
+  if(contasVisiveis().length===0){c.innerHTML=avisoSemConta();return;}
   const preset=importPresetConta;importPresetConta=null;
   c.innerHTML=`
    <div class="hint"><b>Como funciona:</b> no app ou site do seu banco, baixe o extrato no formato <b>OFX</b> (recomendado, é o mesmo do Money) ou <b>CSV</b>. Depois selecione o arquivo aqui — os lançamentos repetidos são detectados e ignorados automaticamente.</div>
    <div class="panel"><div class="panel-h"><h3>1. Selecione o arquivo</h3></div><div class="panel-b pad">
-     <div class="field"><label>Conta de destino</label><select id="impConta">${state.contas.map(co=>`<option value="${co.id}" ${preset===co.id?"selected":""}>${esc(co.nome)} — ${nomeTipo(co.tipo)}${(co.moeda||"BRL")==="USD"?" (US$)":""}</option>`).join("")}</select></div>
+     <div class="field"><label>Conta de destino</label><select id="impConta">${contasVisiveis().map(co=>`<option value="${co.id}" ${preset===co.id?"selected":""}>${esc(co.nome)} — ${nomeTipo(co.tipo)}${(co.moeda||"BRL")==="USD"?" (US$)":""}</option>`).join("")}</select></div>
      <div class="field"><label>Arquivo (.ofx, .qfx, .csv ou .txt)</label><input type="file" id="impFile" accept=".ofx,.qfx,.csv,.txt"></div>
    </div></div>
    <div id="impArea"></div>`;
@@ -985,7 +1004,7 @@ function parseData(s){
 
 /* ---------- BACKUP ---------- */
 function vBackup(c){
-  const nL=state.lancamentos.length,nC=state.contas.length;
+  const nL=lancamentosVisiveis().length,nC=contasVisiveis().length;
   c.innerHTML=`
    <div class="hint">Seus dados agora ficam salvos <b>na nuvem</b> (Firebase) e sincronizam entre seus dispositivos — basta entrar com o mesmo login. Ainda assim, é recomendável <b>exportar um backup</b> em arquivo de vez em quando, como segurança extra — é o equivalente ao arquivo <i>.mny</i> do Money.</div>
    <div class="cards">
@@ -995,9 +1014,9 @@ function vBackup(c){
      <div class="card" style="border-left:3px solid var(--brass)"><div class="lbl">Versão do app</div><div class="big num" style="font-size:18px">${APP_VERSION}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${APP_VERSION_DATA}</div></div>
    </div>
    <div class="panel"><div class="panel-h"><h3>Exportar</h3></div><div class="panel-b pad">
-     <p style="margin-top:0;color:var(--muted);font-size:14px">Salve uma cópia de todos os seus dados em arquivo.</p>
+     <p style="margin-top:0;color:var(--muted);font-size:14px">Salve uma cópia dos seus dados em arquivo.${!ehAdmin()?" (As contas pessoais do administrador não são incluídas.)":""}</p>
      <div style="display:flex;gap:10px;flex-wrap:wrap">
-       <button class="btn primary" onclick="exportarJSON()">↧ Backup completo (.json)</button>
+       ${ehAdmin()?`<button class="btn primary" onclick="exportarJSON()">↧ Backup completo (.json)</button>`:""}
        <button class="btn" onclick="exportarCSV()">↧ Lançamentos em CSV</button>
      </div></div></div>
    ${ehAdmin()?`<div class="panel"><div class="panel-h"><h3>Restaurar backup</h3></div><div class="panel-b pad">
@@ -1013,10 +1032,10 @@ function baixar(nome,conteudo,tipo){
   const blob=new Blob([conteudo],{type:tipo});const url=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=url;a.download=nome;a.click();URL.revokeObjectURL(url);
 }
-function exportarJSON(){const dados={...state,_versao:APP_VERSION,_versaoData:APP_VERSION_DATA};baixar(`caderneta-backup-${hojeISO()}.json`,JSON.stringify(dados,null,2),"application/json");}
+function exportarJSON(){if(!ehAdmin())return;const dados={...state,_versao:APP_VERSION,_versaoData:APP_VERSION_DATA};baixar(`caderneta-backup-${hojeISO()}.json`,JSON.stringify(dados,null,2),"application/json");}
 function exportarCSV(){
   const linhas=[["Data","Descrição","Memo","Categoria","Conta","Moeda","Valor","Tipo"]];
-  lancamentosOrdenados().forEach(l=>{const co=contaPorId(l.contaId);linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",co?co.nome:"",moedaConta(l.contaId),String(l.valor).replace(".",","),l.tipo]);});
+  lancamentosOrdenados().filter(lancEhVisivel).forEach(l=>{const co=contaPorId(l.contaId);linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",nomeContaVis(l.contaId),moedaConta(l.contaId),String(l.valor).replace(".",","),l.tipo]);});
   const csv=linhas.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
   baixar(`caderneta-lancamentos-${hojeISO()}.csv`,"\ufeff"+csv,"text/csv");
 }
@@ -1025,10 +1044,10 @@ function restaurarJSON(e){
   const f=e.target.files[0];if(!f)return;
   if(!confirm("Restaurar este backup vai SUBSTITUIR os dados financeiros atuais (contas, lançamentos, categorias). Seus usuários/logins atuais são mantidos. Continuar?")){e.target.value="";return;}
   const reader=new FileReader();
-  reader.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(!d.contas||!d.lancamentos)throw 0;d.usuarios=state.usuarios;state=migrar(d);salvar();alert("Backup restaurado! Seus dados financeiros foram importados.");irPara("painel");}catch(err){alert("Arquivo inválido.");}};
+  reader.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(!d.contas||!d.lancamentos)throw 0;d.usuarios=state.usuarios;d.acessos=state.acessos;state=migrar(d);salvar();alert("Backup restaurado! Seus dados financeiros foram importados.");irPara("painel");}catch(err){alert("Arquivo inválido.");}};
   reader.readAsText(f);
 }
-function apagarTudo(){if(!ehAdmin())return;if(confirm("Tem certeza? Isso apaga TODAS as contas e lançamentos.")&&confirm("Esta ação não pode ser desfeita. Confirma?")){const us=state.usuarios;state=novoEstado();state.usuarios=us;salvar();irPara("painel");}}
+function apagarTudo(){if(!ehAdmin())return;if(confirm("Tem certeza? Isso apaga TODAS as contas e lançamentos.")&&confirm("Esta ação não pode ser desfeita. Confirma?")){const us=state.usuarios,ac=state.acessos;state=novoEstado();state.usuarios=us;state.acessos=ac;salvar();irPara("painel");}}
 
 /* ============ Modais (conta / lançamento) ============ */
 function abrirModal(titulo,corpo,botoes,wide){
@@ -1055,20 +1074,31 @@ function modalConta(id,tipoForcado){
       </select></div>
     </div>
     <div class="field"><label>Instituição (opcional)</label><input type="text" id="cInst" placeholder="Banco/corretora" value="${c?esc(c.instituicao||""):""}"></div>
+    ${ehAdmin()?`<div class="field"><label>Uso da conta</label>
+      <div class="seg" id="cUsoSeg">
+        <button type="button" data-p="0" class="${(c&&c.pessoal)?'':'on tr'}">🏢 Empresa</button>
+        <button type="button" data-p="1" class="${(c&&c.pessoal)?'on desp':''}">👤 Pessoal</button>
+      </div>
+      <input type="hidden" id="cPessoal" value="${(c&&c.pessoal)?'1':'0'}">
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">Contas <b>Pessoais</b> só aparecem para você (administrador). Operadores e usuários de consulta não veem essas contas nem seus lançamentos.</div></div>`:""}
     <div class="field"><label>Saldo inicial (<span id="cMoedaLbl">${moedaAtual==="USD"?"US$":"R$"}</span>)</label><input type="number" step="0.01" id="cSaldo" placeholder="0,00" value="${c?(c.saldoInicial||0):""}">
       <div style="font-size:12px;color:var(--muted);margin-top:4px">Para cartão de crédito, informe a fatura atual como valor negativo (ex.: -500). Contas em US$ são convertidas para R$ no patrimônio e relatórios.</div></div>`,
     [{txt:"Cancelar",cls:"ghost",fn:fecharModal},{txt:c?"Salvar":"Criar",cls:"primary",fn:()=>{
       const nome=document.getElementById("cNome").value.trim();if(!nome){alert("Informe o nome da conta.");return;}
-      const dados={nome,tipo:cTipo.value,moeda:cMoeda.value,instituicao:cInst.value.trim(),saldoInicial:parseFloat(cSaldo.value)||0};
+      // pessoal: só o admin controla; para os demais, mantém o valor atual (novas contas = empresa)
+      const pessoalEl=document.getElementById("cPessoal");
+      const pessoal=ehAdmin()?(pessoalEl&&pessoalEl.value==="1"):(c?!!c.pessoal:false);
+      const dados={nome,tipo:cTipo.value,moeda:cMoeda.value,instituicao:cInst.value.trim(),saldoInicial:parseFloat(cSaldo.value)||0,pessoal};
       if(c)Object.assign(c,dados);else state.contas.push({id:uid(),...dados});
       salvar();fecharModal();render();
     }}]);
+  if(ehAdmin()){const usoBtns=document.querySelectorAll("#cUsoSeg button");usoBtns.forEach(b=>b.onclick=()=>{usoBtns.forEach(x=>x.className="");b.className="on "+(b.dataset.p==="1"?"desp":"tr");document.getElementById("cPessoal").value=b.dataset.p;});}
   document.getElementById("cMoeda").onchange=function(){document.getElementById("cMoedaLbl").textContent=this.value==="USD"?"US$":"R$";};
 }
 
 function modalLancamento(id,contaPreset){
   if(!podeEditar())return;
-  if(state.contas.length===0){alert("Crie uma conta antes de lançar.");irPara("contas");return;}
+  if(contasVisiveis().length===0){alert("Crie uma conta antes de lançar.");irPara("contas");return;}
   const l=id?state.lancamentos.find(x=>x.id===id):null;
   const presel=(!l&&contaPreset)?contaPreset:null;
   const tipo=l?l.tipo:"despesa";
@@ -1097,10 +1127,10 @@ function modalLancamento(id,contaPreset){
     if(t==="transferencia"){
       campoCat.style.display="none";
       document.getElementById("campoConta").innerHTML=`<div class="field split">
-        <div><label>De (origem)</label><select id="lConta">${state.contas.map(co=>`<option value="${co.id}" ${(l&&l.contaId===co.id)||(presel===co.id)?"selected":""}>${esc(co.nome)}</option>`).join("")}</select></div>
-        <div><label>Para (destino)</label><select id="lContaDest">${state.contas.map(co=>`<option value="${co.id}" ${l&&l.contaDestinoId===co.id?"selected":""}>${esc(co.nome)}</option>`).join("")}</select></div></div>`;
+        <div><label>De (origem)</label><select id="lConta">${contasVisiveis().map(co=>`<option value="${co.id}" ${(l&&l.contaId===co.id)||(presel===co.id)?"selected":""}>${esc(co.nome)}${co.pessoal?" · 👤":""}</option>`).join("")}</select></div>
+        <div><label>Para (destino)</label><select id="lContaDest">${contasVisiveis().map(co=>`<option value="${co.id}" ${l&&l.contaDestinoId===co.id?"selected":""}>${esc(co.nome)}${co.pessoal?" · 👤":""}</option>`).join("")}</select></div></div>`;
     }else{
-      document.getElementById("campoConta").innerHTML=`<div class="field"><label>Conta</label><select id="lConta">${state.contas.map(co=>`<option value="${co.id}" ${(l&&l.contaId===co.id)||(presel===co.id)?"selected":""}>${esc(co.nome)}</option>`).join("")}</select></div>`;
+      document.getElementById("campoConta").innerHTML=`<div class="field"><label>Conta</label><select id="lConta">${contasVisiveis().map(co=>`<option value="${co.id}" ${(l&&l.contaId===co.id)||(presel===co.id)?"selected":""}>${esc(co.nome)}${co.pessoal?" · 👤":""}</option>`).join("")}</select></div>`;
       campoCat.style.display="block";
       const cats=categoriasPorTipo(t);
       const atual=(prevSel&&prevSel!=="__nova__")?prevSel:(l?l.categoria||"":"");
@@ -1208,112 +1238,98 @@ function lineChart(serie){
 function avisoSemConta(){return`<div class="panel"><div class="empty"><div class="em-ic">▤</div><h4>Crie uma conta primeiro</h4><p>Você precisa de pelo menos uma conta para lançar ou importar movimentações.</p><div style="margin-top:14px"><button class="btn primary" onclick="irPara('contas')">Ir para Contas</button></div></div></div>`;}
 function semPermissao(){return`<div class="panel"><div class="empty"><div class="em-ic">🔒</div><h4>Sem permissão</h4><p>Seu perfil (${sessao?ROLES[sessao.role]:""}) não tem acesso a esta área. Fale com um administrador.</p></div></div>`;}
 
-/* ---------- Telas de login / cadastro ---------- */
-function telaSetup(){
-  document.getElementById("authgate").style.display="flex";
-  document.getElementById("authgate").innerHTML=`<div class="authbox">
-    <h1><span class="coin">R$</span> Meu Money</h1>
-    <p class="sub">Primeiro acesso — crie o usuário administrador.</p>
-    <div class="err" id="aerr"></div>
-    <div class="field"><input type="text" id="sNome" placeholder="Seu nome"></div>
-    <div class="field"><input type="text" id="sLogin" placeholder="Usuário (login)" autocomplete="off"></div>
-    <div class="field"><input type="password" id="sSenha" placeholder="Senha"></div>
-    <div class="field"><input type="password" id="sSenha2" placeholder="Repita a senha"></div>
-    <button class="btn primary" id="sBtn">Criar administrador</button></div>`;
-  document.getElementById("sBtn").onclick=()=>{
-    const nome=sNome.value.trim(),login=sLogin.value.trim(),s1=sSenha.value,s2=sSenha2.value;
-    const err=document.getElementById("aerr");
-    if(!nome||!login||!s1){err.textContent="Preencha nome, usuário e senha.";return;}
-    if(s1.length<4){err.textContent="A senha deve ter ao menos 4 caracteres.";return;}
-    if(s1!==s2){err.textContent="As senhas não conferem.";return;}
-    const salt=uid()+uid();
-    state.usuarios.push({id:uid(),nome,login,salt,senhaHash:hashSenha(s1,salt),role:"admin"});
-    salvar();sessao={id:state.usuarios[0].id,nome,login,role:"admin"};mostrarApp();
-  };
-  ["sNome","sLogin","sSenha","sSenha2"].forEach(id=>document.getElementById(id).addEventListener("keydown",e=>{if(e.key==="Enter")sBtn.click();}));
-  document.getElementById("sNome").focus();
-}
-function telaLogin(){
-  document.getElementById("authgate").style.display="flex";
-  document.getElementById("authgate").innerHTML=`<div class="authbox">
-    <h1><span class="coin">R$</span> Meu Money</h1>
-    <p class="sub">Entre com seu usuário e senha.</p>
-    <div class="err" id="aerr"></div>
-    <div class="field"><input type="text" id="lUser" placeholder="Usuário" autocomplete="off"></div>
-    <div class="field"><input type="password" id="lPass" placeholder="Senha"></div>
-    <button class="btn primary" id="lBtn">Entrar</button>
-    <div style="text-align:center;margin-top:16px"><a href="#" id="lForgot" style="font-size:12.5px;color:var(--muted);text-decoration:none">Esqueci a senha — recriar acesso</a></div></div>`;
-  const tentar=()=>{
-    const login=lUser.value.trim(),senha=lPass.value;
-    const err=document.getElementById("aerr");
-    const u=state.usuarios.find(x=>x.login.toLowerCase()===login.toLowerCase());
-    if(!u||u.senhaHash!==hashSenha(senha,u.salt)){err.textContent="Usuário ou senha incorretos.";lPass.value="";return;}
-    sessao={id:u.id,nome:u.nome,login:u.login,role:u.role};mostrarApp();
-  };
-  document.getElementById("lBtn").onclick=tentar;
-  document.getElementById("lForgot").onclick=e=>{e.preventDefault();recriarAcesso();};
-  ["lUser","lPass"].forEach(id=>document.getElementById(id).addEventListener("keydown",e=>{if(e.key==="Enter")tentar();}));
-  document.getElementById("lUser").focus();
-}
-function recriarAcesso(){
-  if(!confirm("Recriar acesso vai APAGAR todos os usuários e senhas, e levar você à criação de um novo administrador.\n\nSeus dados financeiros (contas, lançamentos, categorias) NÃO são apagados.\n\nContinuar?"))return;
-  if(!confirm("Confirma? Em seguida você criará um novo administrador."))return;
-  state.usuarios=[];salvar();telaSetup();
-}
+/* (As telas de login/senha locais antigas foram substituídas pelo login na nuvem — Firebase.) */
 function mostrarApp(){
   document.getElementById("authgate").style.display="none";
   document.getElementById("authgate").innerHTML="";
   document.querySelector(".app").style.display="flex";
-  document.getElementById("navUsuarios").style.display="none";
-  document.getElementById("userBox").innerHTML=`<div class="userchip">Conectado como <b>${esc(sessao.nome)}</b><br>${ROLES[sessao.role]}</div><button class="logout" onclick="sair()">Sair</button>`;
+  document.getElementById("navUsuarios").style.display=ehAdmin()?"flex":"none";
+  document.getElementById("userBox").innerHTML=`<div class="userchip">Conectado como <b>${esc(sessao.nome)}</b><br>${ROLES[sessao.role]||sessao.role}</div><button class="logout" onclick="sair()">Sair</button>`;
   if(viewAtual==="usuarios"&&!ehAdmin())viewAtual="painel";
   document.getElementById("appver").textContent=APP_VERSION+" ("+APP_VERSION_DATA+")";
   irPara(viewAtual);
 }
 function sair(){if(window.auth){try{window.auth.signOut();}catch(e){}}}
 
-/* ---------- USUÁRIOS (admin) ---------- */
+/* ---------- USUÁRIOS / ACESSOS (admin) ----------
+   Cada pessoa entra com o próprio e-mail e senha (Firebase). Aqui o admin
+   libera, bloqueia e define o papel de cada e-mail. Quem não é o dono nunca
+   vira administrador. */
+function papelBadge(role){return ROLES[role]||role;}
 function vUsuarios(c,sub,ta){
   if(!ehAdmin()){c.innerHTML=semPermissao();return;}
-  ta.innerHTML=`<button class="btn brass" onclick="modalUsuario()">+ Novo usuário</button>`;
-  c.innerHTML=`<div class="hint">O login protege o acesso ao app e separa o que cada pessoa pode fazer. Lembrando: é uma tranca de uso — para proteção total dos dados, use também a senha do Windows e criptografia de disco.</div>
-   <div class="panel"><div class="panel-h"><h3>Usuários</h3></div><div class="panel-b"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th></th></tr></thead><tbody>
-     ${state.usuarios.map((u,i)=>`<tr><td>${esc(u.nome)}${u.id===sessao.id?' <span class="tag b">você</span>':""}</td><td class="num">${esc(u.login)}</td><td>${ROLES[u.role]}</td>
-       <td class="r"><div class="row-actions"><button class="iconbtn" onclick="modalUsuario(${i})">✎</button><button class="iconbtn" onclick="excluirUsuario(${i})">🗑</button></div></td></tr>`).join("")}
-   </tbody></table></div></div>`;
+  ta.innerHTML=`<button class="btn brass" onclick="modalAcesso()">+ Pré-autorizar e-mail</button>`;
+  const acessos=(state.acessos||[]).slice().sort((a,b)=>(a.nome||a.email).localeCompare(b.nome||b.email,"pt-BR"));
+  const pendentes=acessos.filter(a=>a.bloqueado&&!ehOwner(a.email));
+  const liberados=acessos.filter(a=>!a.bloqueado||ehOwner(a.email));
+  const linha=a=>{
+    const dono=ehOwner(a.email);
+    const eu=sessao&&(a.email||"").toLowerCase()===(sessao.login||"").toLowerCase();
+    const roleShow=dono?"admin":a.role;
+    return`<tr>
+      <td>${esc(a.nome||"—")}${dono?' <span class="tag b">dono</span>':(eu?' <span class="tag b">você</span>':"")}</td>
+      <td class="num">${esc(a.email)}</td>
+      <td>${dono?`<span class="tag">${papelBadge("admin")}</span>`:`<select onchange="definirPapel('${esc(a.email)}',this.value)" style="border:1px solid var(--line);border-radius:7px;padding:5px 8px">
+          <option value="operador" ${a.role==="operador"?"selected":""}>Operador (vê e lança)</option>
+          <option value="consulta" ${a.role==="consulta"?"selected":""}>Consulta (só vê)</option>
+        </select>`}</td>
+      <td class="r">${dono?'<span style="color:var(--muted);font-size:12.5px">acesso total</span>':`<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+          ${a.bloqueado?`<button class="btn sm brass" onclick="liberarAcesso('${esc(a.email)}')">✓ Liberar</button>`:`<button class="btn sm" onclick="bloquearAcesso('${esc(a.email)}')">Bloquear</button>`}
+          <button class="btn sm ghost" onclick="removerAcesso('${esc(a.email)}')" style="color:var(--red)">Remover</button>
+        </div>`}</td></tr>`;
+  };
+  c.innerHTML=`<div class="hint">Cada pessoa entra com o <b>próprio e-mail e senha</b>. Quando alguém novo entra pela primeira vez, aparece aqui como <b>“aguardando liberação”</b> e não vê nada até você liberar. <b>Operador</b> vê e lança nas contas da empresa; <b>Consulta</b> só visualiza. As contas marcadas como <b>pessoais</b> nunca aparecem para eles — só para você.</div>
+   ${pendentes.length?`<div class="panel" style="border-color:var(--brass)"><div class="panel-h"><h3>Aguardando sua liberação (${pendentes.length})</h3></div>
+     <div class="panel-b"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel ao liberar</th><th></th></tr></thead><tbody>${pendentes.map(linha).join("")}</tbody></table></div></div>`:""}
+   <div class="panel"><div class="panel-h"><h3>Usuários com acesso</h3></div>
+     <div class="panel-b"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th></th></tr></thead><tbody>${liberados.length?liberados.map(linha).join(""):'<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px">Só você por enquanto.</td></tr>'}</tbody></table></div></div>`;
 }
-function modalUsuario(i){
-  const u=(i!=null&&i>=0)?state.usuarios[i]:null;
-  abrirModal(u?"Editar usuário":"Novo usuário",`
-    <div class="field"><label>Nome</label><input type="text" id="uNome" value="${u?esc(u.nome):""}"></div>
-    <div class="field"><label>Usuário (login)</label><input type="text" id="uLogin" value="${u?esc(u.login):""}" autocomplete="off"></div>
-    <div class="field"><label>Perfil</label><select id="uRole">${Object.entries(ROLES).map(([v,n])=>`<option value="${v}" ${(u?u.role:"leitor")===v?"selected":""}>${n}</option>`).join("")}</select></div>
-    <div class="field"><label>${u?"Nova senha (deixe em branco para manter)":"Senha"}</label><input type="password" id="uSenha" placeholder="${u?"••••••":"Senha"}" autocomplete="new-password"></div>`,
-    [{txt:"Cancelar",cls:"ghost",fn:fecharModal},{txt:u?"Salvar":"Criar",cls:"primary",fn:()=>{
-      const nome=uNome.value.trim(),login=uLogin.value.trim(),role=uRole.value,senha=uSenha.value;
-      if(!nome||!login){alert("Informe nome e usuário.");return;}
-      if(state.usuarios.some((x,idx)=>idx!==i&&x.login.toLowerCase()===login.toLowerCase())){alert("Já existe um usuário com esse login.");return;}
-      if(u){
-        if(u.role==="admin"&&role!=="admin"&&state.usuarios.filter(x=>x.role==="admin").length<=1){alert("Precisa existir pelo menos um administrador.");return;}
-        u.nome=nome;u.login=login;u.role=role;
-        if(senha){if(senha.length<4){alert("A senha deve ter ao menos 4 caracteres.");return;}u.salt=uid()+uid();u.senhaHash=hashSenha(senha,u.salt);}
-        if(u.id===sessao.id){sessao.nome=nome;sessao.login=login;sessao.role=role;}
-      }else{
-        if(!senha||senha.length<4){alert("Defina uma senha de ao menos 4 caracteres.");return;}
-        const salt=uid()+uid();
-        state.usuarios.push({id:uid(),nome,login,salt,senhaHash:hashSenha(senha,salt),role});
-      }
-      salvar();fecharModal();mostrarApp();render();
+function definirPapel(email,role){
+  if(!ehAdmin())return;
+  if(ehOwner(email))return;
+  const a=acessoDe(email);if(!a)return;
+  a.role=(role==="consulta"?"consulta":"operador");
+  salvar();
+}
+function liberarAcesso(email){
+  if(!ehAdmin()||ehOwner(email))return;
+  const a=acessoDe(email);if(!a)return;
+  a.bloqueado=false;salvar();render();
+}
+function bloquearAcesso(email){
+  if(!ehAdmin()||ehOwner(email))return;
+  const a=acessoDe(email);if(!a)return;
+  if(!confirm(`Bloquear o acesso de "${a.nome||a.email}"? Ele será desconectado e não conseguirá entrar até você liberar de novo.`))return;
+  a.bloqueado=true;salvar();render();
+}
+function removerAcesso(email){
+  if(!ehAdmin()||ehOwner(email))return;
+  const a=acessoDe(email);if(!a)return;
+  if(!confirm(`Remover "${a.nome||a.email}" da lista? Obs.: se essa pessoa ainda tiver o login (e-mail e senha), ela pode entrar de novo e voltará como “aguardando liberação”.`))return;
+  state.acessos=state.acessos.filter(x=>(x.email||"").toLowerCase()!==(email||"").toLowerCase());
+  salvar();render();
+}
+function modalAcesso(){
+  if(!ehAdmin())return;
+  abrirModal("Pré-autorizar um e-mail",`
+    <div class="hint">Autorize com antecedência o e-mail de alguém. Assim, quando a pessoa criar o login (com esse mesmo e-mail) e entrar, ela já cai direto com o papel escolhido, sem precisar esperar sua liberação.</div>
+    <div class="field"><label>Nome (opcional)</label><input type="text" id="aNome" placeholder="Ex.: Maria — financeiro"></div>
+    <div class="field"><label>E-mail</label><input type="email" id="aEmail" placeholder="pessoa@exemplo.com" autocomplete="off"></div>
+    <div class="field"><label>Papel</label><select id="aRole">
+      <option value="operador">Operador (vê e lança nas contas da empresa)</option>
+      <option value="consulta">Consulta (só visualiza)</option>
+    </select></div>`,
+    [{txt:"Cancelar",cls:"ghost",fn:fecharModal},{txt:"Autorizar",cls:"primary",fn:()=>{
+      const nome=document.getElementById("aNome").value.trim();
+      const email=document.getElementById("aEmail").value.trim().toLowerCase();
+      const role=document.getElementById("aRole").value==="consulta"?"consulta":"operador";
+      if(!email||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){alert("Informe um e-mail válido.");return;}
+      if(ehOwner(email)){alert("Esse já é o e-mail do administrador (dono).");return;}
+      const existente=acessoDe(email);
+      if(existente){existente.nome=nome||existente.nome;existente.role=role;existente.bloqueado=false;}
+      else state.acessos.push({email,nome,role,bloqueado:false});
+      salvar();fecharModal();render();
     }}]);
-}
-function excluirUsuario(i){
-  const u=state.usuarios[i];if(!u)return;
-  if(u.role==="admin"&&state.usuarios.filter(x=>x.role==="admin").length<=1){alert("Não é possível excluir o único administrador.");return;}
-  if(!confirm(`Excluir o usuário "${u.nome}"?`))return;
-  const eraEu=u.id===sessao.id;
-  state.usuarios.splice(i,1);salvar();
-  if(eraEu){sair();return;}
-  render();
 }
 
 document.getElementById("appver").textContent=APP_VERSION+" ("+APP_VERSION_DATA+")";
@@ -1369,9 +1385,35 @@ function iniciarNuvem(){
       return;
     }
     usuarioAtual=user;
-    sessao={id:user.uid,nome:user.displayName||user.email,login:user.email,role:"admin"};
     telaConectando("Carregando seus dados…");
-    await carregarNuvemInicial();
+    await carregarNuvemInicial(); // carrega o state (inclui o registro de acessos)
+
+    // ---- Decide o papel do usuário a partir do registro de acessos ----
+    const email=(user.email||"").trim();
+    const nomeExib=user.displayName||email;
+    let role;
+    if(ehOwner(email)){
+      // O dono é sempre admin. Garante que ele está no registro como admin ativo.
+      role="admin";
+      const a=acessoDe(email);
+      if(!a){state.acessos.push({email:email.toLowerCase(),nome:nomeExib,role:"admin",bloqueado:false});await gravarNuvemJa();}
+      else if(a.role!=="admin"||a.bloqueado){a.role="admin";a.bloqueado=false;await gravarNuvemJa();}
+    }else{
+      const a=acessoDe(email);
+      if(!a){
+        // Usuário novo/desconhecido: entra no registro como PENDENTE (bloqueado) e é barrado até o admin liberar.
+        state.acessos.push({email:email.toLowerCase(),nome:nomeExib,role:"operador",bloqueado:true});
+        try{await gravarNuvemJa();}catch(e){}
+        return recusarAcesso("Seu acesso ainda não foi liberado pelo administrador. Assim que ele aprovar, você poderá entrar.");
+      }
+      if(a.bloqueado){
+        return recusarAcesso("Seu acesso está bloqueado. Fale com o administrador.");
+      }
+      role=(a.role==="admin"?"operador":a.role)||"operador"; // segurança: só o dono/registro-admin é admin
+      if(a.role==="admin"&&!ehOwner(email)){role="operador";} // ninguém além do dono é admin por engano
+    }
+    sessao={id:user.uid,nome:nomeExib,login:email,role};
+
     nuvemPronta=true;
     if(unsubNuvem)unsubNuvem();
     unsubNuvem=docRef.onSnapshot(snap=>{
@@ -1379,10 +1421,27 @@ function iniciarNuvem(){
       if(!snap.exists)return;
       const d=snap.data();if(!d||!d.state)return;
       state=migrar(d.state);salvarLocal();
+      // Se o admin bloquear este usuário durante a sessão, derruba na hora.
+      if(sessao&&!ehOwner(sessao.login)){const a=acessoDe(sessao.login);if(!a||a.bloqueado){sair();return;}}
       if(sessao&&document.querySelector(".app").style.display!=="none")render();
     },err=>console.warn("onSnapshot",err));
     mostrarApp();
   });
+}
+/* Barra o acesso: mostra mensagem e desconecta do Firebase. */
+function recusarAcesso(msg){
+  nuvemPronta=false;
+  if(unsubNuvem){unsubNuvem();unsubNuvem=null;}
+  const g=document.getElementById("authgate");
+  g.style.display="flex";
+  document.querySelector(".app").style.display="none";
+  g.innerHTML=`<div class="authbox" style="text-align:center">
+    <h1 style="justify-content:center"><span class="coin">R$</span> Meu Money</h1>
+    <div style="font-size:34px;margin:6px 0 4px">🔒</div>
+    <p class="sub" style="margin-bottom:18px">${esc(msg)}</p>
+    <button class="btn primary" id="rbSair">Voltar ao login</button></div>`;
+  document.getElementById("rbSair").onclick=()=>{try{if(window.auth)window.auth.signOut();}catch(e){}};
+  sessao=null;
 }
 
 async function carregarNuvemInicial(){
@@ -1489,10 +1548,33 @@ iniciarNuvem();
 
 </script>
 <script>
-/* Registra o service worker (PWA) — permite instalar o app com ícone */
+/* Registra o service worker (PWA) — permite instalar o app com ícone.
+   Também cuida da ATUALIZAÇÃO AUTOMÁTICA: quando uma versão nova é publicada,
+   o app baixa e aplica sozinho, recarregando uma única vez. */
 if ("serviceWorker" in navigator) {
+  let recarregando = false;
+  // Quando um novo service worker assume o controle, recarrega a página (uma vez só)
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (recarregando) return;
+    recarregando = true;
+    location.reload();
+  });
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(e => console.warn("SW", e));
+    navigator.serviceWorker.register("sw.js").then(reg => {
+      // Verifica se há versão nova assim que abre e, depois, de tempos em tempos
+      try { reg.update(); } catch (e) {}
+      setInterval(() => { try { reg.update(); } catch (e) {} }, 60 * 60 * 1000);
+      reg.addEventListener("updatefound", () => {
+        const novo = reg.installing;
+        if (!novo) return;
+        novo.addEventListener("statechange", () => {
+          // Versão nova instalada e já existe uma controlando -> ativa na hora
+          if (novo.state === "installed" && navigator.serviceWorker.controller) {
+            try { novo.postMessage({ type: "SKIP_WAITING" }); } catch (e) {}
+          }
+        });
+      });
+    }).catch(e => console.warn("SW", e));
   });
 }
 </script>

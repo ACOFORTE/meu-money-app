@@ -235,8 +235,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.1";
-const APP_VERSION_DATA="28/07/2026 · nuvem + acessos";
+const APP_VERSION="3.3";
+const APP_VERSION_DATA="17/08/2026 · CSV + última atualização das contas";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -354,6 +354,30 @@ function patrimonio(ateISO){
   return total;
 }
 function lancamentosOrdenados(){return[...state.lancamentos].sort((a,b)=>b.data<a.data?-1:b.data>a.data?1:(b._t||0)-(a._t||0));}
+/* ---- Última atualização de cada conta (data do lançamento mais recente que a toca) ---- */
+function ultimaMovConta(id){
+  let ult=null;
+  for(const l of state.lancamentos){
+    if(l.contaId===id||l.contaDestinoId===id){ if(!ult||l.data>ult)ult=l.data; }
+  }
+  return ult; // ISO (AAAA-MM-DD) ou null
+}
+function diasDesdeISO(iso){
+  if(!iso)return null;
+  const hoje=new Date(hojeISO()+"T00:00:00"), d=new Date(iso+"T00:00:00");
+  return Math.round((hoje-d)/86400000);
+}
+/* Devolve {html} com a linha "atualizada há X dias · data" pronta para exibir sob o nome da conta. */
+function seloUltimaAtualizacao(id){
+  const iso=ultimaMovConta(id);
+  if(!iso)return `<div style="font-size:11.5px;color:var(--muted-soft);margin-top:2px">sem lançamentos ainda</div>`;
+  const dias=diasDesdeISO(iso);
+  let rel;
+  if(dias<=0)rel="hoje"; else if(dias===1)rel="ontem"; else rel="há "+dias+" dias";
+  const alerta=dias>=30; // destaca contas paradas há 30 dias ou mais
+  const cor=alerta?"#8a6420":"var(--muted)";
+  return `<div style="font-size:11.5px;color:${cor};margin-top:2px">${alerta?"⚠ ":""}atualizada ${rel} · ${fmtData(iso)}</div>`;
+}
 
 /* ============ Roteamento ============ */
 const VIEWS={painel:"Painel",lancamentos:"Lançamentos",contas:"Contas",contaDetalhe:"Conta",categorias:"Categorias",patrimonio:"Patrimônio",relatorios:"Relatórios",importar:"Importar extrato",backup:"Backup",usuarios:"Usuários"};
@@ -414,7 +438,7 @@ function vPainel(c,sub,ta){
    <div class="panel">
      <div class="panel-h"><h3>Saldo das contas</h3><button class="btn sm" onclick="irPara('contas')">Ver todas</button></div>
      <div class="panel-b"><table><tbody>
-       ${contasVisiveis().map(co=>{const m=co.moeda||"BRL";const s=saldoConta(co.id);return`<tr><td><span class="acctdot" style="background:${corTipo(co.tipo)}"></span>${esc(co.nome)}${co.pessoal?' <span class="tag b" title="Conta pessoal">👤</span>':""} <span class="tag" style="margin-left:6px">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}</span></td>
+       ${contasVisiveis().map(co=>{const m=co.moeda||"BRL";const s=saldoConta(co.id);return`<tr><td><span class="acctdot" style="background:${corTipo(co.tipo)}"></span>${esc(co.nome)}${co.pessoal?' <span class="tag b" title="Conta pessoal">👤</span>':""} <span class="tag" style="margin-left:6px">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}</span>${seloUltimaAtualizacao(co.id)}</td>
          <td class="r num ${s>=0?'':'neg'}">${moneyM(s,m)}${m==="USD"?`<div style="font-size:11.5px;color:var(--muted)">${money(emReal(s,m))}</div>`:""}</td></tr>`;}).join("")}
      </tbody></table></div>
    </div>
@@ -516,7 +540,8 @@ function vContas(c,sub,ta){
       ${co.instituicao?`<div style="font-size:12.5px;color:var(--muted)">${esc(co.instituicao)}</div>`:""}</div>
       <span style="color:var(--muted-soft);font-size:20px;line-height:1">›</span>
       </div><div class="num ${s>=0?'':'neg'}" style="font-size:23px;font-weight:600;margin-top:12px">${moneyM(s,m)}</div>
-      ${m==="USD"?`<div class="num" style="font-size:13px;color:var(--muted);margin-top:2px">≈ ${money(emReal(s,m))}</div>`:""}</div>`;
+      ${m==="USD"?`<div class="num" style="font-size:13px;color:var(--muted);margin-top:2px">≈ ${money(emReal(s,m))}</div>`:""}
+      ${seloUltimaAtualizacao(co.id)}</div>`;
   }).join("")}</div>
   <div class="card" style="display:flex;justify-content:space-between;align-items:center"><div class="lbl">Total (patrimônio líquido em R$)</div><div class="num" style="font-size:21px;font-weight:600">${money(patrimonio())}</div></div>
   <div style="text-align:center;color:var(--muted);font-size:13px;margin-top:12px">Toque em uma conta para abrir e lançar diretamente nela.</div>`;
@@ -870,42 +895,83 @@ function prepararCSV(txt){
   const{rows,delim}=parseCSV(txt);
   if(rows.length<2){document.getElementById("impArea").innerHTML=`<div class="panel"><div class="empty"><p>Arquivo CSV vazio ou inválido.</p></div></div>`;return;}
   const head=rows[0];
-  const guess=(palavras)=>{for(let i=0;i<head.length;i++){const h=(head[i]||"").toLowerCase();if(palavras.some(p=>h.includes(p)))return i;}return -1;};
-  let ci=guessColIndexValor(rows);
-  const map={data:guess(["data","date","dt"]),desc:guess(["descri","hist","memo","lan","detalhe","name"]),valor:guess(["valor","amount","montante","crédito","credito"])>=0?guess(["valor","amount","montante"]):ci};
-  if(map.data<0)map.data=0;if(map.valor<0)map.valor=ci>=0?ci:head.length-1;if(map.desc<0)map.desc=1;
-  importBuffer={tipo:"csv",rows,delim,head,map,temHeader:true};
+  const acha=(...palavras)=>{for(let i=0;i<head.length;i++){const h=(head[i]||"").toLowerCase();if(palavras.some(p=>h.includes(p)))return i;}return -1;};
+  const colDebito=acha("debit","débito","debito","saída","saida");
+  const colCredito=acha("credit","crédito","credito","entrada","depósito","deposito");
+  let colValor=acha("valor","amount","montante","value");
+  if(colValor<0)colValor=guessColIndexValor(rows,head);
+  let colData=acha("transaction date","data lanç","data lanc","data","date","dt");
+  if(colData<0)colData=0;
+  let colDesc=acha("descri","hist","memo","description","name","detalhe","favorecido","lan");
+  if(colDesc<0)colDesc=(colData===1?0:1);
+  const modoDC=(colDebito>=0&&colCredito>=0&&colDebito!==colCredito); // banco separa saída/entrada?
+  const map={data:colData,desc:colDesc,valor:(colValor>=0?colValor:head.length-1),debito:colDebito,credito:colCredito};
+  importBuffer={tipo:"csv",rows,delim,head,map,temHeader:true,modoValor:modoDC?"dc":"unico"};
   renderMapeamentoCSV();
 }
 function renderMapeamentoCSV(){
   const{head,map}=importBuffer;
-  const opt=sel=>head.map((h,i)=>`<option value="${i}" ${i===sel?"selected":""}>Coluna ${i+1}${h?` — ${esc(h.slice(0,18))}`:""}</option>`).join("");
+  const dc=importBuffer.modoValor==="dc";
+  const optCol=(sel,comNenhum)=>(comNenhum?`<option value="-1" ${sel<0?"selected":""}>— nenhuma —</option>`:"")+head.map((h,i)=>`<option value="${i}" ${i===sel?"selected":""}>Coluna ${i+1}${h?` — ${esc(h.slice(0,22))}`:""}</option>`).join("");
   document.getElementById("impArea").innerHTML=`
    <div class="panel"><div class="panel-h"><h3>2. Confirme as colunas</h3></div><div class="panel-b pad">
      <div class="field"><label><input type="checkbox" id="csvHeader" ${importBuffer.temHeader?"checked":""}> A primeira linha é cabeçalho (ignorar)</label></div>
      <div class="field split">
-       <div><label>Data</label><select id="mData">${opt(map.data)}</select></div>
-       <div><label>Descrição</label><select id="mDesc">${opt(map.desc)}</select></div>
-       <div><label>Valor</label><select id="mValor">${opt(map.valor)}</select></div>
+       <div><label>Data</label><select id="mData">${optCol(map.data)}</select></div>
+       <div><label>Descrição</label><select id="mDesc">${optCol(map.desc)}</select></div>
+     </div>
+     <div class="field"><label>Como aparece o valor no arquivo?</label>
+       <div class="seg" id="mModo">
+         <button type="button" data-m="unico" class="${dc?'':'on tr'}">Uma coluna de valor</button>
+         <button type="button" data-m="dc" class="${dc?'on tr':''}">Saída + Entrada</button>
+       </div>
+       <input type="hidden" id="mModoV" value="${dc?'dc':'unico'}">
+       <div style="font-size:12px;color:var(--muted);margin-top:4px">Alguns bancos (ex.: dos EUA) separam o dinheiro em duas colunas — <b>Débito/Debit</b> (saídas) e <b>Crédito/Credit</b> (entradas). Se for o caso, use <b>“Saída + Entrada”</b>.</div>
+     </div>
+     <div id="mCampoUnico" class="field" style="${dc?'display:none':''}"><label>Valor</label><select id="mValor">${optCol(map.valor)}</select></div>
+     <div id="mCampoDC" class="field split" style="${dc?'':'display:none'}">
+       <div><label>Saída (Débito)</label><select id="mDebito">${optCol(map.debito,true)}</select></div>
+       <div><label>Entrada (Crédito)</label><select id="mCredito">${optCol(map.credito,true)}</select></div>
      </div>
      <button class="btn primary" onclick="aplicarMapeamentoCSV()">Pré-visualizar</button>
    </div></div>`;
+  const segBtns=document.querySelectorAll("#mModo button");
+  segBtns.forEach(bt=>bt.onclick=()=>{
+    segBtns.forEach(x=>x.className="");bt.className="on tr";
+    const m=bt.dataset.m;document.getElementById("mModoV").value=m;
+    document.getElementById("mCampoUnico").style.display=(m==="dc")?"none":"";
+    document.getElementById("mCampoDC").style.display=(m==="dc")?"":"none";
+  });
 }
 function aplicarMapeamentoCSV(){
   const b=importBuffer;
-  b.map={data:+mData.value,desc:+mDesc.value,valor:+mValor.value};
   b.temHeader=csvHeader.checked;
+  const modo=document.getElementById("mModoV").value;b.modoValor=modo;
+  b.map.data=+mData.value;b.map.desc=+mDesc.value;
+  if(modo==="dc"){b.map.debito=+document.getElementById("mDebito").value;b.map.credito=+document.getElementById("mCredito").value;}
+  else{b.map.valor=+document.getElementById("mValor").value;}
+  // descobre o formato da data a partir da coluna escolhida (dia/mês x mês/dia)
+  const fmt=detectarFormatoDataCSV(b.rows.slice(b.temHeader?1:0).map(r=>(r[b.map.data]||"")).filter(Boolean));
   const linhas=[];
   b.rows.forEach((r,idx)=>{
     if(b.temHeader&&idx===0)return;
     if(!r||r.every(x=>!x||!x.trim()))return;
-    const data=parseData(r[b.map.data]||"");
-    const valor=parseValor(r[b.map.valor]||"");
+    const data=parseDataFmt(r[b.map.data]||"",fmt);
+    let valor;
+    if(modo==="dc"){
+      const vd=b.map.debito>=0?parseValor(r[b.map.debito]||""):NaN;   // saída
+      const vc=b.map.credito>=0?parseValor(r[b.map.credito]||""):NaN; // entrada
+      valor=0;
+      if(!isNaN(vc)&&vc!==0)valor+=Math.abs(vc);
+      if(!isNaN(vd)&&vd!==0)valor-=Math.abs(vd);
+    }else{
+      valor=parseValor(r[b.map.valor]||"");
+    }
     const descricao=(r[b.map.desc]||"").trim()||"(sem descrição)";
     if(!data||isNaN(valor)||valor===0)return;
     linhas.push({data,descricao,valor,usar:true});
   });
-  if(!linhas.length){alert("Não consegui ler linhas válidas. Revise quais colunas são data e valor.");return;}
+  if(!linhas.length){alert("Não consegui ler linhas válidas. Revise as colunas de data e valor.");return;}
   importBuffer.linhas=linhas;
   renderPreviewImport();
 }
@@ -979,28 +1045,65 @@ function splitCSV(line,delim){
     else cur+=ch;}
   out.push(cur);return out.map(s=>s.trim());
 }
-function guessColIndexValor(rows){
-  const n=rows[0].length;let best=-1,bestScore=-1;
-  for(let c=0;c<n;c++){let score=0;for(let r=1;r<Math.min(rows.length,12);r++){const v=parseValor(rows[r][c]||"");if(!isNaN(v)&&v!==0&&/[\d]/.test(rows[r][c]||""))score++;}if(score>bestScore){bestScore=score;best=c;}}
+function ehColunaData(header){return /(date|data|\bdt\b|posted|vencimento|competen)/i.test(header||"");}
+function pareceData(s){return /^\s*\d{1,4}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\s*$/.test(s||"");}
+function guessColIndexValor(rows,head){
+  head=head||rows[0]||[];
+  const n=(rows[0]||[]).length;let best=-1,bestScore=-1;
+  for(let c=0;c<n;c++){
+    if(ehColunaData(head[c]))continue;           // nunca escolhe coluna de data como valor
+    let score=0;
+    for(let r=1;r<Math.min(rows.length,15);r++){
+      const raw=((rows[r]||[])[c]||"");
+      if(pareceData(raw))continue;               // valores que parecem data não contam
+      const v=parseValor(raw);
+      if(!isNaN(v)&&v!==0&&/\d/.test(raw))score++;
+    }
+    if(score>bestScore){bestScore=score;best=c;}
+  }
   return best;
 }
 function parseValor(s){
-  s=(s==null?"":String(s)).replace(/[R$\s]/g,"").trim();
-  if(!s)return NaN;
+  let raw=(s==null?"":String(s)).trim();
+  if(pareceData(raw))return NaN;                  // uma data nunca é valor
+  raw=raw.replace(/[^\d.,()\-]/g,"");             // tira R$, US$, letras, espaços
+  if(!raw)return NaN;
   let neg=false;
-  if(/^\(.*\)$/.test(s)){neg=true;s=s.slice(1,-1);}
-  if(s.includes(",")&&s.includes(".")){s=s.replace(/\./g,"").replace(",",".");}
-  else if(s.includes(",")){s=s.replace(",",".");}
-  let v=parseFloat(s);if(isNaN(v))return NaN;return neg?-v:v;
+  if(/^\(.*\)$/.test(raw)){neg=true;raw=raw.replace(/[()]/g,"");}
+  if(raw.includes(",")&&raw.includes(".")){
+    if(raw.lastIndexOf(",")>raw.lastIndexOf("."))raw=raw.replace(/\./g,"").replace(",",".");// BR: 1.234,56
+    else raw=raw.replace(/,/g,"");                                                          // US: 1,234.56
+  }else if(raw.includes(",")){
+    raw=raw.replace(",",".");                      // BR: 6,00
+  }
+  let v=parseFloat(raw);if(isNaN(v))return NaN;return neg?-v:v;
 }
-function parseData(s){
+/* Detecta se as datas do arquivo estão em dia/mês (dmy, padrão BR) ou mês/dia (mdy, padrão EUA). */
+function detectarFormatoDataCSV(datas){
+  let mdy=false,dmy=false;
+  for(const s of datas){
+    const m=String(s||"").match(/^\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.]\d{2,4}\s*$/);
+    if(!m)continue;
+    const a=+m[1],b=+m[2];
+    if(a>12)dmy=true;   // 1º campo > 12 => é dia => DD/MM
+    if(b>12)mdy=true;   // 2º campo > 12 => é dia => MM/DD
+  }
+  if(mdy&&!dmy)return "mdy";
+  if(dmy&&!mdy)return "dmy";
+  return "dmy";         // ambíguo: mantém padrão brasileiro
+}
+function parseDataFmt(s,fmt){
   s=(s||"").trim();let m;
-  if(m=s.match(/(\d{4})-(\d{2})-(\d{2})/))return`${m[1]}-${m[2]}-${m[3]}`;
-  if(m=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/))return`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
-  if(m=s.match(/(\d{1,2})\/(\d{1,2})\/(\d{2})/))return`20${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
-  if(m=s.match(/(\d{2})(\d{2})(\d{4})/))return`${m[3]}-${m[2]}-${m[1]}`;
+  if(m=s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/))return`${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  if(m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/)){
+    let p1=m[1],p2=m[2],y=m[3];if(y.length===2)y="20"+y;
+    const dia=(fmt==="mdy")?p2:p1, mes=(fmt==="mdy")?p1:p2;
+    return`${y}-${mes.padStart(2,"0")}-${dia.padStart(2,"0")}`;
+  }
+  if(m=s.match(/^(\d{2})(\d{2})(\d{4})$/))return`${m[3]}-${m[2]}-${m[1]}`;
   return"";
 }
+function parseData(s){return parseDataFmt(s,"dmy");}
 
 /* ---------- BACKUP ---------- */
 function vBackup(c){

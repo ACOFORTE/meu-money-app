@@ -6,7 +6,7 @@
      mas atualiza a cópia em segundo plano (stale-while-revalidate).
    - Firebase/Firestore e qualquer coisa de fora: vão sempre direto à rede.
    Assim, toda atualização publicada chega sozinha, sem precisar mexer aqui de novo. */
-const CACHE = 'meu-money-v3-1';
+const CACHE = 'meu-money-v3-3';
 const ASSETS = [
   './',
   './index.html',

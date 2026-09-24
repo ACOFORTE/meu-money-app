@@ -238,8 +238,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.7";
-const APP_VERSION_DATA="24/09/2026 · importação de extrato: cabeçalho automático + ignora linhas de saldo";
+const APP_VERSION="3.8";
+const APP_VERSION_DATA="24/09/2026 · controle de edição (evita conflito quando dois usam ao mesmo tempo)";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -293,7 +293,7 @@ function setSaveStatus(s){
   const o=map[s]||map.salvo;
   el.textContent=o.t;el.style.color=o.c;el.style.background=o.bg;el.style.borderColor=o.bd;el.style.display="inline-flex";
 }
-function salvar(){salvarLocal();saveDirty=true;setSaveStatus("salvando");agendarSalvarNuvem();}
+function salvar(){ if(emModoLeitura()){avisarBloqueioEdicao();return;} marcarAtividade(); salvarLocal();saveDirty=true;setSaveStatus("salvando");agendarSalvarNuvem();}
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 
 /* ============ Autenticação e permissões ============ */
@@ -303,7 +303,8 @@ const ROLES={admin:"Administrador",operador:"Operador",consulta:"Consulta"};
 const OWNER_EMAIL="luizfarias@acoforte.com.br";
 const ehOwner=email=>(email||"").trim().toLowerCase()===OWNER_EMAIL;
 function ehAdmin(){return !!sessao&&sessao.role==="admin";}
-function podeEditar(){return !!sessao&&(sessao.role==="admin"||sessao.role==="operador");}
+function temPapelEditor(){return !!sessao&&(sessao.role==="admin"||sessao.role==="operador");}
+function podeEditar(){return temPapelEditor() && !emModoLeitura();}
 
 /* ---- Visibilidade das contas pessoais ----
    Contas marcadas como pessoais (co.pessoal===true) só aparecem para o admin.
@@ -1418,7 +1419,139 @@ function mostrarApp(){
   document.getElementById("appver").textContent=APP_VERSION+" ("+APP_VERSION_DATA+")";
   irPara(viewAtual);
 }
-function sair(){if(window.auth){try{window.auth.signOut();}catch(e){}}}
+function sair(){try{soltarControle();}catch(e){}if(window.auth){try{window.auth.signOut();}catch(e){}}}
+
+/* ============================================================
+   Controle de edição compartilhado (presença em tempo real)
+   - Uma pessoa edita por vez; a outra fica em modo LEITURA.
+   - Libera sozinho em ~1 min após fechar/ficar inativo.
+   - Mede o "frescor" pelo relógio LOCAL (imune ao fuso EUA/BR).
+   Guarda a presença em dados/presenca (mesma coleção do estado).
+   ============================================================ */
+var presRef=null, unsubPres=null, presHeartbeat=null, presCheck=null, presListeners=false, presOk=false;
+var presHolder=null;          // {email,nome} do dono atual (ou null)
+var presLastTsSeen=null;      // último ts visto do dono
+var presLastChangeLocal=0;    // Date.now() local em que o ts mudou pela última vez
+var ultimaAtividade=Date.now();
+var leituraAntes=null, avisouBloqueio=false;
+var PRES_HEARTBEAT_MS=20000;  // pulso a cada 20s
+var PRES_STALE_MS=60000;      // sem pulso por 60s => livre (~1 min)
+var PRES_IDLE_MS=60000;       // parado 60s => solta o controle (~1 min)
+
+function euEmail(){return ((usuarioAtual&&usuarioAtual.email)||(sessao&&sessao.login)||"").toLowerCase();}
+function souDono(){return !!presHolder && (presHolder.email||"").toLowerCase()===euEmail();}
+function controleExpirado(){return presLastChangeLocal===0 || (Date.now()-presLastChangeLocal)>PRES_STALE_MS;}
+function emModoLeitura(){ return presOk && !!presHolder && !souDono() && !controleExpirado(); }
+function marcarAtividade(){ultimaAtividade=Date.now();}
+
+function iniciarPresenca(){
+  if(!db)return;
+  try{presRef=db.collection("dados").doc("presenca");}catch(e){presRef=null;return;}
+  injetarBarraControle();
+  if(unsubPres)unsubPres();
+  leituraAntes=null; avisouBloqueio=false;
+  unsubPres=presRef.onSnapshot(function(snap){
+    presOk=true;
+    var d=snap.exists?snap.data():null;
+    var dono=(d&&d.email)?{email:d.email,nome:d.nome||d.email}:null;
+    var tsVal=(d&&d.ts&&d.ts.toMillis)?d.ts.toMillis():((d&&d.ts)||null);
+    var mudouDono=(!!presHolder!==!!dono) || (presHolder&&dono&&(presHolder.email||"").toLowerCase()!==(dono.email||"").toLowerCase());
+    if(mudouDono || tsVal!==presLastTsSeen){presLastTsSeen=tsVal;presLastChangeLocal=Date.now();}
+    presHolder=dono;
+    aoMudarControle();
+  }, function(err){presOk=false;aoMudarControle();console.warn("presenca — verifique as regras do Firestore para dados/presenca",err);});
+  if(presHeartbeat)clearInterval(presHeartbeat);
+  presHeartbeat=setInterval(function(){ if(souDono() && (Date.now()-ultimaAtividade)<PRES_IDLE_MS){ gravarPresenca(); } }, PRES_HEARTBEAT_MS);
+  if(presCheck)clearInterval(presCheck);
+  presCheck=setInterval(function(){
+    if(souDono() && (Date.now()-ultimaAtividade)>=PRES_IDLE_MS){ soltarControle(); }
+    aoMudarControle();
+  }, 10000);
+  if(!presListeners){
+    presListeners=true;
+    ["pointerdown","keydown","touchstart","wheel"].forEach(function(ev){window.addEventListener(ev,marcarAtividade,{passive:true});});
+    window.addEventListener("pagehide",function(){try{soltarControle();}catch(e){}});
+    document.addEventListener("visibilitychange",function(){ if(!document.hidden){ marcarAtividade(); aoMudarControle(); } });
+  }
+}
+function pararPresenca(){
+  try{soltarControle();}catch(e){}
+  if(unsubPres){unsubPres();unsubPres=null;}
+  if(presHeartbeat){clearInterval(presHeartbeat);presHeartbeat=null;}
+  if(presCheck){clearInterval(presCheck);presCheck=null;}
+  presHolder=null;presLastChangeLocal=0;presLastTsSeen=null;
+  atualizarBarraControle();
+}
+function gravarPresenca(){
+  if(!presRef)return;
+  try{ presRef.set({email:euEmail(),nome:(sessao&&sessao.nome)||euEmail(),ts:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){}); }catch(e){}
+}
+function assumirControle(){ // Promise<bool> — true se o controle é meu
+  if(!presRef||!temPapelEditor())return Promise.resolve(false);
+  marcarAtividade();
+  if(souDono() && !controleExpirado())return Promise.resolve(true);
+  var meu=euEmail();
+  return db.runTransaction(function(tx){
+    return tx.get(presRef).then(function(s){
+      var d=s.exists?s.data():null;
+      var donoEmail=((d&&d.email)||"").toLowerCase();
+      var livre=!donoEmail || donoEmail===meu || controleExpirado();
+      if(livre){ tx.set(presRef,{email:meu,nome:(sessao&&sessao.nome)||meu,ts:firebase.firestore.FieldValue.serverTimestamp()}); return true; }
+      return false;
+    });
+  }).catch(function(){ presOk=false; return true; }); // erro (regras/rede) -> nunca trava o salvamento
+}
+function assumirControleForcado(){
+  if(!presRef)return;
+  if(!confirm("A outra pessoa está editando agora. Assumir o controle mesmo assim? As alterações não salvas dela podem se perder."))return;
+  marcarAtividade(); gravarPresenca();
+}
+function soltarControle(){
+  if(presRef && souDono()){ try{ presRef.set({email:"",nome:"",ts:firebase.firestore.FieldValue.serverTimestamp()}).catch(function(){}); }catch(e){} }
+}
+function bloqueadoPorOutro(){
+  setSaveStatus("erro");
+  if(!avisouBloqueio){ avisouBloqueio=true;
+    alert("Outra pessoa começou a editar agora. Para não sobrescrever o trabalho dela, suas alterações não foram enviadas. Vou recarregar a versão atual.");
+  }
+  if(docRef){docRef.get().then(function(s){ if(s.exists&&s.data().state){ saveDirty=false; state=migrar(s.data().state); salvarLocal(); if(sessao)render(); } }).catch(function(){});}
+}
+function avisarBloqueioEdicao(){
+  var q=presHolder?presHolder.nome:"Outra pessoa";
+  alert(q+" está editando agora. Você está em modo leitura — assim que ela sair (ou em até 1 minuto), a edição libera para você.");
+}
+function injetarBarraControle(){
+  if(document.getElementById("lockBar"))return;
+  var st=document.createElement("style");
+  st.textContent="#lockBar{position:fixed;left:0;right:0;top:0;z-index:99999;display:none;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;padding:9px 14px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.12)}#lockBar.leitura{background:#F0E4CC;color:#7a5713;border-bottom:1px solid #E8D6AE;display:flex}#lockBar.dono{background:#E4F1EB;color:#1F7A5C;border-bottom:1px solid #BFE0D0;display:flex}#lockBar .lbtn{border:1px solid currentColor;background:transparent;color:inherit;border-radius:8px;padding:3px 10px;font-weight:600;cursor:pointer;font-size:13px}body.temLock{padding-top:42px}";
+  document.head.appendChild(st);
+  var bar=document.createElement("div");bar.id="lockBar";document.body.appendChild(bar);
+}
+function atualizarBarraControle(){
+  var bar=document.getElementById("lockBar");if(!bar)return;
+  if(emModoLeitura()){
+    var nome=presHolder?esc(presHolder.nome):"Outra pessoa";
+    bar.className="leitura";
+    bar.innerHTML="🔒 <span><b>"+nome+"</b> está editando agora — você está em <b>modo leitura</b>. Libera sozinho em até 1 min.</span> <button class=\"lbtn\" onclick=\"assumirControleForcado()\">Assumir edição</button>";
+    document.body.classList.add("temLock");
+  }else if(souDono() && !controleExpirado()){
+    bar.className="dono";
+    bar.innerHTML="✍️ <span>Você está com o controle de edição. Ao terminar, é só <b>Sair</b> ou fechar — libera em ~1 min.</span>";
+    document.body.classList.add("temLock");
+  }else{
+    bar.className="";bar.style.display="none";document.body.classList.remove("temLock");
+  }
+}
+function aoMudarControle(){
+  var leituraAgora=emModoLeitura();
+  if(!leituraAgora)avisouBloqueio=false;
+  atualizarBarraControle();
+  if(leituraAgora!==leituraAntes){
+    leituraAntes=leituraAgora;
+    var app=document.querySelector(".app");
+    if(sessao && app && app.style.display!=="none")render();
+  }
+}
 
 /* ---------- USUÁRIOS / ACESSOS (admin) ----------
    Cada pessoa entra com o próprio e-mail e senha (Firebase). Aqui o admin
@@ -1547,6 +1680,7 @@ function iniciarNuvem(){
   auth.onAuthStateChanged(async user=>{
     if(!user){
       usuarioAtual=null;nuvemPronta=false;
+      try{pararPresenca();}catch(e){}
       if(unsubNuvem){unsubNuvem();unsubNuvem=null;}
       sessao=null;
       document.querySelector(".app").style.display="none";
@@ -1601,6 +1735,7 @@ function iniciarNuvem(){
       if(sessao&&document.querySelector(".app").style.display!=="none")render();
     },err=>console.warn("onSnapshot",err));
     mostrarApp();
+    try{iniciarPresenca();}catch(e){console.warn("iniciarPresenca",e);}
   });
 }
 /* Barra o acesso: mostra mensagem e desconecta do Firebase. */
@@ -1635,6 +1770,14 @@ function agendarSalvarNuvem(){
   tSalvarNuvem=setTimeout(gravarNuvemJa,700);
 }
 function gravarNuvemJa(){
+  if(!docRef)return Promise.resolve();
+  // Trava de edição: só grava se EU tiver o controle (não sobrescreve quem está editando).
+  if(presRef && temPapelEditor() && presOk){
+    return assumirControle().then(function(ok){ if(!ok){ bloqueadoPorOutro(); return; } return gravarNuvemAgora(); });
+  }
+  return gravarNuvemAgora();
+}
+function gravarNuvemAgora(){
   if(!docRef)return Promise.resolve();
   if(saveRetry){clearTimeout(saveRetry);saveRetry=null;}
   const u=Date.now();ultimoUpdateEnviado=u;

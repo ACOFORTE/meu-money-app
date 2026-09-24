@@ -219,7 +219,10 @@
           <div class="sub" id="vsub"></div>
         </div>
       </div>
-      <div id="topactions"></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="saveStatus" style="display:none;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 11px;border-radius:20px;border:1px solid #BFE0D0;background:#E4F1EB;color:#1F7A5C;white-space:nowrap"></span>
+        <div id="topactions"></div>
+      </div>
     </div>
     <div class="content" id="content"></div>
   </main>
@@ -235,8 +238,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.3";
-const APP_VERSION_DATA="17/08/2026 · CSV + última atualização das contas";
+const APP_VERSION="3.7";
+const APP_VERSION_DATA="24/09/2026 · importação de extrato: cabeçalho automático + ignora linhas de saldo";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -276,7 +279,21 @@ let state=carregar();
 function carregar(){try{const r=localStorage.getItem(KEY);if(r){return migrar(JSON.parse(r));}}catch(e){console.warn(e);}return novoEstado();}
 function categoriasPorTipo(tipo){return state.categorias.filter(c=>c.tipo===tipo||c.tipo==="ambos").map(c=>c.nome);}
 function salvarLocal(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){}}
-function salvar(){salvarLocal();agendarSalvarNuvem();}
+/* ---- Status de salvamento na nuvem (para nunca perder dados no silêncio) ---- */
+let saveDirty=false, saveStatus="salvo", saveRetry=null, ultimoUpdateEnviado=0;
+function setSaveStatus(s){
+  saveStatus=s;
+  const el=document.getElementById("saveStatus");if(!el)return;
+  const map={
+    salvo:{t:"✓ Salvo na nuvem",c:"#1F7A5C",bg:"#E4F1EB",bd:"#BFE0D0"},
+    salvando:{t:"↻ Salvando…",c:"#8a6420",bg:"#F0E4CC",bd:"#E8D6AE"},
+    pendente:{t:"⚠ Sem conexão — será salvo ao voltar",c:"#8a6420",bg:"#F0E4CC",bd:"#E8D6AE"},
+    erro:{t:"⚠ NÃO salvo — verifique a internet",c:"#B23A48",bg:"#F6E6E8",bd:"#EAC7CD"}
+  };
+  const o=map[s]||map.salvo;
+  el.textContent=o.t;el.style.color=o.c;el.style.background=o.bg;el.style.borderColor=o.bd;el.style.display="inline-flex";
+}
+function salvar(){salvarLocal();saveDirty=true;setSaveStatus("salvando");agendarSalvarNuvem();}
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 
 /* ============ Autenticação e permissões ============ */
@@ -584,8 +601,19 @@ function vContaDetalhe(c,sub,ta){
      <div class="card"><div class="lbl">Conta</div><div style="font-size:18px;font-weight:600;margin-top:6px">${esc(co.nome)}</div>${co.instituicao?`<div style="font-size:12.5px;color:var(--muted)">${esc(co.instituicao)}</div>`:""}
        ${podeEditar()?`<div style="margin-top:12px;display:flex;gap:8px"><button class="btn sm" onclick="modalConta('${co.id}')">Editar conta</button><button class="btn sm" onclick="excluirConta('${co.id}')" style="color:var(--red);border-color:var(--red-soft)">Excluir</button></div>`:""}</div>
    </div>
-   <div class="panel"><div class="panel-h"><h3>Lançamentos da conta</h3><span style="font-size:13px;color:var(--muted)">${movs.length} lançamento(s)</span></div>
+   <div class="panel"><div class="panel-h"><h3>Lançamentos da conta</h3><div style="display:flex;align-items:center;gap:12px"><span style="font-size:13px;color:var(--muted)">${movs.length} lançamento(s)</span>${(ehAdmin()&&movs.length)?`<button class="btn sm" onclick="limparLancamentosConta('${co.id}')" style="color:var(--red);border-color:var(--red-soft)">🧹 Limpar lançamentos</button>`:""}</div></div>
      <div class="panel-b">${movs.length?tabelaConta(movsDesc,m):'<div class="empty" style="padding:34px"><div class="em-ic">≡</div><p>Nenhum lançamento nesta conta ainda.</p>'+(podeEditar()?`<div style="margin-top:12px"><button class="btn primary" onclick="modalLancamento(null,'${co.id}')">Lançar agora</button></div>`:"")+'</div>'}</div></div>`;
+}
+function limparLancamentosConta(id){
+  if(!ehAdmin())return;
+  const co=contaPorId(id);if(!co)return;
+  const n=state.lancamentos.filter(l=>l.contaId===id).length;
+  if(!n){alert("Esta conta não tem lançamentos para limpar.");return;}
+  if(!confirm(`Apagar TODOS os ${n} lançamento(s) da conta "${co.nome}"?\n\nO saldo inicial da conta é mantido. Útil para reimportar um extrato do zero.\n\nEsta ação não pode ser desfeita.`))return;
+  if(!confirm("Confirma? Isso remove todos os lançamentos desta conta."))return;
+  state.lancamentos=state.lancamentos.filter(l=>l.contaId!==id);
+  salvar();render();
+  alert(n+" lançamento(s) removido(s). Agora você pode reimportar o extrato.");
 }
 function tabelaConta(movs,m){
   return`<table><thead><tr><th>Data</th><th>Descrição</th><th class="hide">Categoria</th><th class="r">Valor</th><th class="r hide">Saldo</th><th></th></tr></thead><tbody>
@@ -902,7 +930,8 @@ function prepararCSV(txt){
   if(colValor<0)colValor=guessColIndexValor(rows,head);
   let colData=acha("transaction date","data lanç","data lanc","data","date","dt");
   if(colData<0)colData=0;
-  let colDesc=acha("descri","hist","memo","description","name","detalhe","favorecido","lan");
+  let colDesc=acha("descri","memo","description","favorecido","detalhe","name");
+  if(colDesc<0)colDesc=acha("hist","lan");
   if(colDesc<0)colDesc=(colData===1?0:1);
   const modoDC=(colDebito>=0&&colCredito>=0&&colDebito!==colCredito); // banco separa saída/entrada?
   const map={data:colData,desc:colDesc,valor:(colValor>=0?colValor:head.length-1),debito:colDebito,credito:colCredito};
@@ -956,6 +985,7 @@ function aplicarMapeamentoCSV(){
   b.rows.forEach((r,idx)=>{
     if(b.temHeader&&idx===0)return;
     if(!r||r.every(x=>!x||!x.trim()))return;
+    if(ehLinhaResumo(r))return;   // ignora linhas de saldo/conciliação (não são movimento)
     const data=parseDataFmt(r[b.map.data]||"",fmt);
     let valor;
     if(modo==="dc"){
@@ -977,9 +1007,21 @@ function aplicarMapeamentoCSV(){
 }
 function renderPreviewImport(){
   const contaId=document.getElementById("impConta").value;
-  // dedup
-  const existentes=new Set(state.lancamentos.filter(l=>l.contaId===contaId).map(l=>l.fitid||(l.data+"|"+l.valor.toFixed(2)+"|"+(l.descricao||"").slice(0,24))));
-  importBuffer.linhas.forEach(l=>{const ch=l.fitid||(l.data+"|"+l.valor.toFixed(2)+"|"+(l.descricao||"").slice(0,24));l.dup=existentes.has(ch);if(l.dup)l.usar=false;});
+  // ---- Detecção de repetidos ----
+  // normaliza o código do banco (tira zeros à esquerda, pois o mesmo lançamento às vezes vem "081626" e às vezes "81626")
+  const normFit=f=>(f||"").replace(/^0+/,"");
+  const chaveDe=l=>{const nf=normFit(l.fitid);return nf?(nf+"|"+l.data+"|"+Number(l.valor).toFixed(2)):(l.data+"|"+Number(l.valor).toFixed(2)+"|"+(l.descricao||"").slice(0,24));};
+  const existentes=new Set(state.lancamentos.filter(l=>l.contaId===contaId).map(chaveDe));
+  const vistos=new Set();
+  importBuffer.linhas.forEach(l=>{
+    const nf=normFit(l.fitid);
+    const ch=chaveDe(l);
+    const jaExiste=existentes.has(ch);              // já está na conta (reimportação)
+    const repetidoNoArquivo=nf&&vistos.has(ch);     // repetido dentro do próprio arquivo (só quando há código do banco)
+    l.dup=jaExiste||repetidoNoArquivo;
+    vistos.add(ch);
+    if(l.dup)l.usar=false;
+  });
   const arr=importBuffer.linhas;
   const novos=arr.filter(l=>!l.dup).length,dups=arr.filter(l=>l.dup).length;
   document.getElementById("impArea").innerHTML=`
@@ -1022,7 +1064,7 @@ function parseOFX(text){
     const nome=get(b,"NAME");const memoTag=get(b,"MEMO");const fitid=get(b,"FITID");
     if(!dt&&!amt)continue;
     const iso=dt.length>=8?`${dt.slice(0,4)}-${dt.slice(4,6)}-${dt.slice(6,8)}`:"";
-    const valor=parseFloat((amt||"0").replace(",","."));
+    const valor=parseValor(amt);
     if(!iso||isNaN(valor))continue;
     const descricao=(nome||memoTag||"(sem descrição)").trim();
     const memo=(nome&&memoTag&&nome.trim()!==memoTag.trim())?memoTag.trim():"";
@@ -1032,10 +1074,28 @@ function parseOFX(text){
 }
 function parseCSV(text){
   const linhas=text.split(/\r?\n/).filter(r=>r.trim().length);
-  const amostra=linhas.slice(0,5).join("\n");
+  const amostra=linhas.slice(0,8).join("\n");
   const delim=(amostra.split(";").length>amostra.split(",").length)?";":",";
-  const rows=linhas.map(r=>splitCSV(r,delim));
+  let rows=linhas.map(r=>splitCSV(r,delim));
+  const hi=acharCabecalhoCSV(rows);   // pula linhas de preâmbulo (ex.: extrato do Inter: título/conta/período/saldo)
+  if(hi>0)rows=rows.slice(hi);
   return{rows,delim};
+}
+/* Acha a linha do cabeçalho real, ignorando linhas de resumo no topo do arquivo.
+   1) prefere a 1ª linha que tenha um título de DATA e um de VALOR;
+   2) senão, usa a 1ª linha com o maior nº de colunas (o preâmbulo costuma ter poucas). */
+function acharCabecalhoCSV(rows){
+  const KDATA=/(date|data|\bdt\b|posted|vencimento|competen|lanç|lanc)/i;
+  const KVAL=/(valor|amount|montante|value|d[ée]bito|debit|cr[eé]dito|credit|sa[íi]da|entrada|saldo)/i;
+  const lim=Math.min(rows.length,25);
+  for(let i=0;i<lim;i++){
+    const r=rows[i]||[];
+    if(r.length<2)continue;
+    if(r.some(c=>KDATA.test(c||""))&&r.some(c=>KVAL.test(c||"")))return i;
+  }
+  let maxCols=0;for(let i=0;i<lim;i++)maxCols=Math.max(maxCols,(rows[i]||[]).length);
+  if(maxCols>=3)for(let i=0;i<lim;i++){if((rows[i]||[]).length===maxCols)return i;}
+  return 0;
 }
 function splitCSV(line,delim){
   const out=[];let cur="",q=false;
@@ -1073,6 +1133,8 @@ function parseValor(s){
   if(raw.includes(",")&&raw.includes(".")){
     if(raw.lastIndexOf(",")>raw.lastIndexOf("."))raw=raw.replace(/\./g,"").replace(",",".");// BR: 1.234,56
     else raw=raw.replace(/,/g,"");                                                          // US: 1,234.56
+  }else if(!raw.includes(",")&&(raw.match(/\./g)||[]).length>1){
+    const i=raw.lastIndexOf(".");raw=raw.slice(0,i).replace(/\./g,"")+raw.slice(i);         // CEF/OFX: 1.370.42 -> 1370.42
   }else if(raw.includes(",")){
     raw=raw.replace(",",".");                      // BR: 6,00
   }
@@ -1092,15 +1154,19 @@ function detectarFormatoDataCSV(datas){
   if(dmy&&!mdy)return "dmy";
   return "dmy";         // ambíguo: mantém padrão brasileiro
 }
+/* ignora linhas de conciliação: "Saldo Anterior", "Saldo do dia", "Saldo atual/final", etc. */
+function ehLinhaResumo(r){return (r||[]).some(c=>/^\s*saldo\b/i.test(c||""));}
+function dataPlausivel(y,mes,dia){y=+y;mes=+mes;dia=+dia;return y>=1900&&y<=2100&&mes>=1&&mes<=12&&dia>=1&&dia<=31;}
 function parseDataFmt(s,fmt){
   s=(s||"").trim();let m;
-  if(m=s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/))return`${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  if(m=s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/)){if(!dataPlausivel(m[1],m[2],m[3]))return"";return`${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;}
   if(m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/)){
     let p1=m[1],p2=m[2],y=m[3];if(y.length===2)y="20"+y;
     const dia=(fmt==="mdy")?p2:p1, mes=(fmt==="mdy")?p1:p2;
+    if(!dataPlausivel(y,mes,dia))return"";
     return`${y}-${mes.padStart(2,"0")}-${dia.padStart(2,"0")}`;
   }
-  if(m=s.match(/^(\d{2})(\d{2})(\d{4})$/))return`${m[3]}-${m[2]}-${m[1]}`;
+  if(m=s.match(/^(\d{2})(\d{2})(\d{4})$/)){if(!dataPlausivel(m[3],m[2],m[1]))return"";return`${m[3]}-${m[2]}-${m[1]}`;}
   return"";
 }
 function parseData(s){return parseDataFmt(s,"dmy");}
@@ -1519,10 +1585,16 @@ function iniciarNuvem(){
 
     nuvemPronta=true;
     if(unsubNuvem)unsubNuvem();
-    unsubNuvem=docRef.onSnapshot(snap=>{
-      if(snap.metadata.hasPendingWrites)return;
+    unsubNuvem=docRef.onSnapshot({includeMetadataChanges:true},snap=>{
+      // Uma escrita nossa ainda pendente (só no cache): mostra "salvando" e não mexe no estado.
+      if(snap.metadata.hasPendingWrites){setSaveStatus("salvando");return;}
       if(!snap.exists)return;
       const d=snap.data();if(!d||!d.state)return;
+      // Confirmação de que a NOSSA última gravação chegou à nuvem.
+      if(d._updated&&d._updated===ultimoUpdateEnviado){saveDirty=false;setSaveStatus("salvo");}
+      // Proteção contra perda silenciosa: se ainda há algo local não salvo,
+      // NÃO deixa a cópia da nuvem apagar o que a pessoa acabou de digitar.
+      if(saveDirty)return;
       state=migrar(d.state);salvarLocal();
       // Se o admin bloquear este usuário durante a sessão, derruba na hora.
       if(sessao&&!ehOwner(sessao.login)){const a=acessoDe(sessao.login);if(!a||a.bloqueado){sair();return;}}
@@ -1564,7 +1636,20 @@ function agendarSalvarNuvem(){
 }
 function gravarNuvemJa(){
   if(!docRef)return Promise.resolve();
-  return docRef.set({state:state,_updated:Date.now(),_by:(usuarioAtual&&usuarioAtual.email)||""}).catch(e=>console.warn("gravarNuvem",e));
+  if(saveRetry){clearTimeout(saveRetry);saveRetry=null;}
+  const u=Date.now();ultimoUpdateEnviado=u;
+  setSaveStatus(navigator.onLine===false?"pendente":"salvando");
+  return docRef.set({state:state,_updated:u,_by:(usuarioAtual&&usuarioAtual.email)||""})
+    .then(()=>{
+      // A confirmação definitiva vem pelo onSnapshot (fromCache=false); aqui já sinalizamos progresso.
+      if(navigator.onLine!==false){saveDirty=false;setSaveStatus("salvo");}
+    })
+    .catch(e=>{
+      console.warn("gravarNuvem",e);
+      // Falhou: continua "sujo" e tenta de novo sozinho, sem perder nada.
+      setSaveStatus(navigator.onLine===false?"pendente":"erro");
+      saveRetry=setTimeout(gravarNuvemJa,5000);
+    });
 }
 
 function msgErroAuth(code){
@@ -1646,6 +1731,12 @@ function esqueciSenha(){
     .then(()=>alert("Enviamos um e-mail para "+email.trim()+" com o link para redefinir a senha. Verifique a caixa de entrada e o spam."))
     .catch(e=>alert(msgErroAuth(e.code)));
 }
+
+/* ---- Rede: reage a quedas e voltas de conexão (nunca perder no silêncio) ---- */
+window.addEventListener("offline",()=>{ if(saveDirty)setSaveStatus("pendente"); });
+window.addEventListener("online",()=>{ if(saveDirty){setSaveStatus("salvando");gravarNuvemJa();} });
+/* Se a pessoa tentar fechar/sair com algo ainda não salvo, o navegador avisa. */
+window.addEventListener("beforeunload",e=>{ if(saveDirty){e.preventDefault();e.returnValue="";return "";} });
 
 iniciarNuvem();
 

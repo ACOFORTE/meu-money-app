@@ -2,6 +2,9 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<!-- This site is hosted on Netlify. Anyone can build and deploy a site
+     like this one for free: https://netlify.new/?utm_campaign=loops&utm_source=ai-legible&utm_medium=owned&utm_content=comment&utm_id=541d6785-4e48-414a-8f22-8e90d1ae3d22
+     Netlify hosting facts for this site: static/SSR served via Netlify Edge. -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Meu Money — Controle Financeiro</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -238,8 +241,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.8";
-const APP_VERSION_DATA="24/09/2026 · controle de edição (evita conflito quando dois usam ao mesmo tempo)";
+const APP_VERSION="3.9";
+const APP_VERSION_DATA="03/11/2026 · indicador sempre visível de quem está editando";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -1221,6 +1224,7 @@ function apagarTudo(){if(!ehAdmin())return;if(confirm("Tem certeza? Isso apaga T
 
 /* ============ Modais (conta / lançamento) ============ */
 function abrirModal(titulo,corpo,botoes,wide){
+  try{ if(typeof assumirControle==="function" && temPapelEditor()) assumirControle(); }catch(e){} // ao abrir uma edição, já assume o controle
   const r=document.getElementById("modal-root");
   r.innerHTML=`<div class="overlay" id="ov"><div class="modal ${wide?'wide':''}"><div class="modal-h"><h3>${titulo}</h3><button class="iconbtn" onclick="fecharModal()" style="font-size:20px">×</button></div>
     <div class="modal-b">${corpo}</div><div class="modal-f" id="modalf"></div></div></div>`;
@@ -1448,6 +1452,7 @@ function iniciarPresenca(){
   if(!db)return;
   try{presRef=db.collection("dados").doc("presenca");}catch(e){presRef=null;return;}
   injetarBarraControle();
+  atualizarBarraControle();
   if(unsubPres)unsubPres();
   leituraAntes=null; avisouBloqueio=false;
   unsubPres=presRef.onSnapshot(function(snap){
@@ -1523,23 +1528,26 @@ function avisarBloqueioEdicao(){
 function injetarBarraControle(){
   if(document.getElementById("lockBar"))return;
   var st=document.createElement("style");
-  st.textContent="#lockBar{position:fixed;left:0;right:0;top:0;z-index:99999;display:none;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;padding:9px 14px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.12)}#lockBar.leitura{background:#F0E4CC;color:#7a5713;border-bottom:1px solid #E8D6AE;display:flex}#lockBar.dono{background:#E4F1EB;color:#1F7A5C;border-bottom:1px solid #BFE0D0;display:flex}#lockBar .lbtn{border:1px solid currentColor;background:transparent;color:inherit;border-radius:8px;padding:3px 10px;font-weight:600;cursor:pointer;font-size:13px}body.temLock{padding-top:42px}";
+  st.textContent="#lockBar{position:fixed;left:0;right:0;top:0;z-index:99999;display:none;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;padding:8px 14px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.12)}#lockBar.leitura{background:#F0E4CC;color:#7a5713;border-bottom:1px solid #E8D6AE;display:flex}#lockBar.dono{background:#E4F1EB;color:#1F7A5C;border-bottom:1px solid #BFE0D0;display:flex}#lockBar.livre{background:#E9F3EC;color:#2E7D52;border-bottom:1px solid #CDE6D6;display:flex}#lockBar.conectando{background:#ECECEC;color:#555;border-bottom:1px solid #DDD;display:flex}#lockBar .lbtn{border:1px solid currentColor;background:transparent;color:inherit;border-radius:8px;padding:3px 10px;font-weight:600;cursor:pointer;font-size:13px}body.temLock{padding-top:40px}";
   document.head.appendChild(st);
   var bar=document.createElement("div");bar.id="lockBar";document.body.appendChild(bar);
 }
 function atualizarBarraControle(){
   var bar=document.getElementById("lockBar");if(!bar)return;
+  document.body.classList.add("temLock");   // indicador SEMPRE visível
   if(emModoLeitura()){
     var nome=presHolder?esc(presHolder.nome):"Outra pessoa";
     bar.className="leitura";
-    bar.innerHTML="🔒 <span><b>"+nome+"</b> está editando agora — você está em <b>modo leitura</b>. Libera sozinho em até 1 min.</span> <button class=\"lbtn\" onclick=\"assumirControleForcado()\">Assumir edição</button>";
-    document.body.classList.add("temLock");
+    bar.innerHTML="🔒 <span><b>"+nome+"</b> está editando agora — você está em <b>modo leitura</b>. Libera em até 1 min.</span> <button class=\"lbtn\" onclick=\"assumirControleForcado()\">Assumir edição</button>";
   }else if(souDono() && !controleExpirado()){
     bar.className="dono";
-    bar.innerHTML="✍️ <span>Você está com o controle de edição. Ao terminar, é só <b>Sair</b> ou fechar — libera em ~1 min.</span>";
-    document.body.classList.add("temLock");
+    bar.innerHTML="✍️ <span>Você está editando (o controle é seu). Ao terminar, é só sair ou fechar.</span>";
+  }else if(!presOk){
+    bar.className="conectando";
+    bar.innerHTML="⏳ <span>Conectando o controle de edição…</span>";
   }else{
-    bar.className="";bar.style.display="none";document.body.classList.remove("temLock");
+    bar.className="livre";
+    bar.innerHTML="🟢 <span><b>Edição livre</b> — ninguém está editando agora.</span>";
   }
 }
 function aoMudarControle(){

@@ -241,8 +241,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="3.9";
-const APP_VERSION_DATA="03/11/2026 · indicador sempre visível de quem está editando";
+const APP_VERSION="4.0";
+const APP_VERSION_DATA="17/11/2026 · contas agrupáveis, categorias A–Z e situação R/N/C dos lançamentos";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -280,7 +280,22 @@ function migrar(s){
 function acessoDe(email){email=(email||"").trim().toLowerCase();return(state.acessos||[]).find(a=>(a.email||"").trim().toLowerCase()===email)||null;}
 let state=carregar();
 function carregar(){try{const r=localStorage.getItem(KEY);if(r){return migrar(JSON.parse(r));}}catch(e){console.warn(e);}return novoEstado();}
-function categoriasPorTipo(tipo){return state.categorias.filter(c=>c.tipo===tipo||c.tipo==="ambos").map(c=>c.nome);}
+function categoriasPorTipo(tipo){return state.categorias.filter(c=>c.tipo===tipo||c.tipo==="ambos").map(c=>c.nome).sort((a,b)=>a.localeCompare(b,"pt-BR"));}
+/* ---- Situação de conciliação dos lançamentos (R/N/C) ---- */
+function statusLanc(l){return (l&&l.status)||"N";}
+function cancelado(l){return statusLanc(l)==="C";}
+function proxStatus(s){return s==="N"?"R":(s==="R"?"C":"N");}
+function alternarStatus(id){ if(!podeEditar())return; const l=state.lancamentos.find(x=>x.id===id); if(!l)return; l.status=proxStatus(statusLanc(l)); salvar(); render(); }
+function seloStatus(l){
+  const s=statusLanc(l);
+  const map={N:{bg:"#ECECEC",c:"#666",tit:"Não conciliado"},R:{bg:"#E4F1EB",c:"#1F7A5C",tit:"Conciliado"},C:{bg:"#F6E6E8",c:"#B23A48",tit:"Cancelado"}};
+  const o=map[s]||map.N;
+  const clk=podeEditar()?`onclick="event.stopPropagation();alternarStatus('${l.id}')" style="cursor:pointer;`:`style="`;
+  return `<span ${clk}display:inline-block;min-width:20px;text-align:center;font-weight:700;font-size:12px;border-radius:6px;padding:1px 6px;background:${o.bg};color:${o.c}" title="${o.tit}${podeEditar()?' — clique para alternar (N→R→C)':''}">${s}</span>`;
+}
+/* ---- Agrupamento de contas (por instituição / titular) ---- */
+function titularDe(co){return (co.titular&&String(co.titular).trim())||((co.nome||"").trim().split(/\s+/)[0])||"—";}
+function instDe(co){return (co.instituicao&&String(co.instituicao).trim())||"Sem instituição";}
 function salvarLocal(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){}}
 /* ---- Status de salvamento na nuvem (para nunca perder dados no silêncio) ---- */
 let saveDirty=false, saveStatus="salvo", saveRetry=null, ultimoUpdateEnviado=0;
@@ -344,6 +359,7 @@ function saldoConta(id){
   const c=contaPorId(id);if(!c)return 0;
   let s=c.saldoInicial||0;
   for(const l of state.lancamentos){
+    if(cancelado(l))continue;
     if(l.tipo==="transferencia"){
       if(l.contaId===id)s-=Math.abs(l.valor);
       if(l.contaDestinoId===id){
@@ -360,6 +376,7 @@ function patrimonio(ateISO){
   for(const c of contasVisiveis()){
     let s=c.saldoInicial||0;
     for(const l of state.lancamentos){
+      if(cancelado(l))continue;
       if(ateISO&&l.data>ateISO)continue;
       if(l.tipo==="transferencia"){
         if(l.contaId===c.id)s-=Math.abs(l.valor);
@@ -429,7 +446,7 @@ function vPainel(c,sub,ta){
   const ym=mesDe(hojeISO());
   let rec=0,desp=0;
   for(const l of lancamentosVisiveis()){
-    if(l.tipo==="transferencia")continue;
+    if(l.tipo==="transferencia"||cancelado(l))continue;
     if(mesDe(l.data)===ym){ const v=emReal(l.valor,moedaConta(l.contaId)); if(v>0)rec+=v; else desp+=v; }
   }
   sub.textContent=nomeMes(ym).replace("/"," / 20");
@@ -491,22 +508,23 @@ function modalCotacao(){
 }
 
 /* ---------- LANÇAMENTOS ---------- */
-let filtroL={busca:"",conta:"",mes:"",cat:""};
+let filtroL={busca:"",conta:"",mes:"",cat:"",status:""};
 function vLancamentos(c,sub,ta){
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalLancamento()">+ Novo lançamento</button>`:"";
   if(contasVisiveis().length===0){c.innerHTML=avisoSemConta();return;}
   const meses=[...new Set(lancamentosVisiveis().map(l=>mesDe(l.data)))].sort().reverse();
-  const cats=[...new Set(lancamentosVisiveis().map(l=>l.categoria).filter(Boolean))].sort();
+  const cats=[...new Set(lancamentosVisiveis().map(l=>l.categoria).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR"));
   c.innerHTML=`
    <div class="toolbar">
      <input type="text" class="grow" id="fbusca" placeholder="Buscar em descrição e memo..." value="${esc(filtroL.busca)}">
      <select id="fconta"><option value="">Todas as contas</option>${contasVisiveis().map(co=>`<option value="${co.id}" ${filtroL.conta===co.id?"selected":""}>${esc(co.nome)}</option>`).join("")}</select>
      <select id="fmes"><option value="">Todos os meses</option>${meses.map(m=>`<option value="${m}" ${filtroL.mes===m?"selected":""}>${nomeMes(m)}</option>`).join("")}</select>
      <select id="fcat"><option value="">Todas categorias</option>${cats.map(k=>`<option value="${esc(k)}" ${filtroL.cat===k?"selected":""}>${esc(k)}</option>`).join("")}</select>
+     <select id="fstatus"><option value="">Todas situações</option><option value="N" ${filtroL.status==="N"?"selected":""}>Não conciliados (N)</option><option value="R" ${filtroL.status==="R"?"selected":""}>Conciliados (R)</option><option value="C" ${filtroL.status==="C"?"selected":""}>Cancelados (C)</option></select>
    </div>
    <div class="panel"><div class="panel-b" id="listaLanc"></div></div>`;
-  const upd=()=>{filtroL={busca:fbusca.value,conta:fconta.value,mes:fmes.value,cat:fcat.value};renderListaLanc();};
-  fbusca.oninput=upd;fconta.onchange=upd;fmes.onchange=upd;fcat.onchange=upd;
+  const upd=()=>{filtroL={busca:fbusca.value,conta:fconta.value,mes:fmes.value,cat:fcat.value,status:fstatus.value};renderListaLanc();};
+  fbusca.oninput=upd;fconta.onchange=upd;fmes.onchange=upd;fcat.onchange=upd;fstatus.onchange=upd;
   renderListaLanc();
 }
 function lancsFiltrados(){
@@ -514,6 +532,7 @@ function lancsFiltrados(){
     if(filtroL.conta&&l.contaId!==filtroL.conta&&l.contaDestinoId!==filtroL.conta)return false;
     if(filtroL.mes&&mesDe(l.data)!==filtroL.mes)return false;
     if(filtroL.cat&&l.categoria!==filtroL.cat)return false;
+    if(filtroL.status&&statusLanc(l)!==filtroL.status)return false;
     if(filtroL.busca){const q=filtroL.busca.toLowerCase();if(!((l.descricao||"").toLowerCase().includes(q)||(l.memo||"").toLowerCase().includes(q)))return false;}
     return true;
   });
@@ -522,25 +541,27 @@ function renderListaLanc(){
   const arr=lancsFiltrados();
   const el=document.getElementById("listaLanc");
   if(!arr.length){el.innerHTML='<div class="empty" style="padding:34px"><div class="em-ic">≡</div><p>Nenhum lançamento encontrado.</p></div>';return;}
-  let tot=0;arr.forEach(l=>{if(l.tipo!=="transferencia")tot+=emReal(l.valor,moedaConta(l.contaId));});
+  let tot=0;arr.forEach(l=>{if(l.tipo!=="transferencia"&&!cancelado(l))tot+=emReal(l.valor,moedaConta(l.contaId));});
   const temUSD=arr.some(l=>moedaConta(l.contaId)==="USD");
   el.innerHTML=tabelaLanc(arr)+`<div style="padding:12px 18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;font-size:13px;color:var(--muted)"><span>${arr.length} lançamento(s)</span><span>Soma${temUSD?" (em R$)":""}: <b class="num ${tot>=0?'pos':'neg'}">${money(tot)}</b></span></div>`;
 }
 function tabelaLanc(arr){
-  return`<table><thead><tr><th>Data</th><th>Descrição</th><th class="hide">Categoria</th><th class="hide">Conta</th><th class="r">Valor</th><th></th></tr></thead><tbody>
+  return`<table><thead><tr><th style="width:28px"></th><th>Data</th><th>Descrição</th><th class="hide">Categoria</th><th class="hide">Conta</th><th class="r">Valor</th><th></th></tr></thead><tbody>
    ${arr.map(l=>{
      const co=contaPorId(l.contaId);
+     const ri=cancelado(l)?' style="opacity:.55"':'';
+     const risc=cancelado(l)?'text-decoration:line-through':'';
      if(l.tipo==="transferencia"){
        const cd=contaPorId(l.contaDestinoId);
-       return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"Transferência")}<div style="font-size:12px;color:var(--muted)">${esc(nomeContaVis(l.contaId))} → ${esc(nomeContaVis(l.contaDestinoId))}${l.memo?" · "+esc(l.memo):""}</div></td>
+       return`<tr${ri}><td>${seloStatus(l)}</td><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"Transferência")}<div style="font-size:12px;color:var(--muted)">${esc(nomeContaVis(l.contaId))} → ${esc(nomeContaVis(l.contaDestinoId))}${l.memo?" · "+esc(l.memo):""}</div></td>
        <td class="hide"><span class="tag b">Transferência</span></td><td class="hide num" style="color:var(--muted)">—</td>
-       <td class="r num">${moneyM(Math.abs(l.valor),moedaConta(l.contaId))}</td>
+       <td class="r num" style="${risc}">${moneyM(Math.abs(l.valor),moedaConta(l.contaId))}</td>
        <td class="r">${podeEditar()?`<div class="row-actions"><button class="iconbtn" onclick="modalLancamento('${l.id}')">✎</button><button class="iconbtn" onclick="excluirLanc('${l.id}')">🗑</button></div>`:""}</td></tr>`;
      }
-     return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td>
+     return`<tr${ri}><td>${seloStatus(l)}</td><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td>
        <td class="hide">${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:""}</td>
        <td class="hide"><span class="acctdot" style="background:${corTipo(co?co.tipo:'')}"></span>${esc(nomeContaVis(l.contaId))}</td>
-       <td class="r num ${l.valor>=0?'pos':'neg'}">${moneyM(l.valor,moedaConta(l.contaId))}</td>
+       <td class="r num ${l.valor>=0?'pos':'neg'}" style="${risc}">${moneyM(l.valor,moedaConta(l.contaId))}</td>
        <td class="r">${podeEditar()?`<div class="row-actions"><button class="iconbtn" onclick="modalLancamento('${l.id}')">✎</button><button class="iconbtn" onclick="excluirLanc('${l.id}')">🗑</button></div>`:""}</td></tr>`;
    }).join("")}
   </tbody></table>`;
@@ -548,24 +569,52 @@ function tabelaLanc(arr){
 function excluirLanc(id){if(!podeEditar())return;if(confirm("Excluir este lançamento?")){state.lancamentos=state.lancamentos.filter(l=>l.id!==id);salvar();render();}}
 
 /* ---------- CONTAS ---------- */
+let contaAgrupar=(function(){try{return localStorage.getItem("mm_contaAgrupar")||"nenhum";}catch(e){return"nenhum";}})();
+function setContaAgrupar(v){contaAgrupar=v;try{localStorage.setItem("mm_contaAgrupar",v);}catch(e){}render();}
+function cardConta(co){
+  const m=co.moeda||"BRL";const s=saldoConta(co.id);
+  return`<div class="card clickable" onclick="abrirConta('${co.id}')"><div style="display:flex;justify-content:space-between;align-items:start">
+    <div><div class="lbl" style="color:${corTipo(co.tipo)}">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}${co.pessoal?" · 👤 Pessoal":""}</div>
+    <div style="font-weight:600;margin-top:4px;font-size:16px">${esc(co.nome)}</div>
+    ${co.instituicao?`<div style="font-size:12.5px;color:var(--muted)">${esc(co.instituicao)}</div>`:""}</div>
+    <span style="color:var(--muted-soft);font-size:20px;line-height:1">›</span>
+    </div><div class="num ${s>=0?'':'neg'}" style="font-size:23px;font-weight:600;margin-top:12px">${moneyM(s,m)}</div>
+    ${m==="USD"?`<div class="num" style="font-size:13px;color:var(--muted);margin-top:2px">≈ ${money(emReal(s,m))}</div>`:""}
+    ${seloUltimaAtualizacao(co.id)}</div>`;
+}
 function vContas(c,sub,ta){
   ta.innerHTML=podeEditar()?`<button class="btn brass" onclick="modalConta()">+ Nova conta</button>`:"";
   if(contasVisiveis().length===0){
     c.innerHTML=`<div class="panel"><div class="empty"><div class="em-ic">▤</div><h4>Nenhuma conta cadastrada</h4><p>Crie contas para banco, cartão, dinheiro ou investimentos.</p><div style="margin-top:14px"><button class="btn primary" onclick="modalConta()">Criar conta</button></div></div></div>`;return;
   }
-  c.innerHTML=`<div class="cards">${contasVisiveis().map(co=>{
-    const m=co.moeda||"BRL";const s=saldoConta(co.id);
-    return`<div class="card clickable" onclick="abrirConta('${co.id}')"><div style="display:flex;justify-content:space-between;align-items:start">
-      <div><div class="lbl" style="color:${corTipo(co.tipo)}">${nomeTipo(co.tipo)}${m==="USD"?" · US$":""}${co.pessoal?" · 👤 Pessoal":""}</div>
-      <div style="font-weight:600;margin-top:4px;font-size:16px">${esc(co.nome)}</div>
-      ${co.instituicao?`<div style="font-size:12.5px;color:var(--muted)">${esc(co.instituicao)}</div>`:""}</div>
-      <span style="color:var(--muted-soft);font-size:20px;line-height:1">›</span>
-      </div><div class="num ${s>=0?'':'neg'}" style="font-size:23px;font-weight:600;margin-top:12px">${moneyM(s,m)}</div>
-      ${m==="USD"?`<div class="num" style="font-size:13px;color:var(--muted);margin-top:2px">≈ ${money(emReal(s,m))}</div>`:""}
-      ${seloUltimaAtualizacao(co.id)}</div>`;
-  }).join("")}</div>
-  <div class="card" style="display:flex;justify-content:space-between;align-items:center"><div class="lbl">Total (patrimônio líquido em R$)</div><div class="num" style="font-size:21px;font-weight:600">${money(patrimonio())}</div></div>
+  const contas=contasVisiveis();
+  const seg=`<div class="toolbar" style="margin-bottom:14px"><span style="font-size:13px;color:var(--muted);align-self:center">Agrupar por:</span>
+    <div class="seg" id="agrSeg" style="flex:0 0 auto;max-width:360px">
+      <button type="button" data-a="nenhum" class="${contaAgrupar==='nenhum'?'on tr':''}">Nenhum</button>
+      <button type="button" data-a="instituicao" class="${contaAgrupar==='instituicao'?'on tr':''}">Instituição</button>
+      <button type="button" data-a="titular" class="${contaAgrupar==='titular'?'on tr':''}">Titular</button>
+    </div></div>`;
+  let corpo;
+  if(contaAgrupar==="nenhum"){
+    corpo=`<div class="cards">${contas.map(cardConta).join("")}</div>`;
+  }else{
+    const chave=contaAgrupar==="instituicao"?instDe:titularDe;
+    const grupos={};
+    contas.forEach(co=>{const k=chave(co);(grupos[k]=grupos[k]||[]).push(co);});
+    const nomes=Object.keys(grupos).sort((a,b)=>a.localeCompare(b,"pt-BR"));
+    corpo=nomes.map(nome=>{
+      const arr=grupos[nome].slice().sort((a,b)=>(a.nome||"").localeCompare(b.nome||"","pt-BR"));
+      let subt=0;arr.forEach(co=>subt+=saldoContaReal(co.id));
+      return`<div style="display:flex;justify-content:space-between;align-items:baseline;margin:4px 2px 8px">
+        <h3 style="margin:0;font-size:15px">${esc(nome)} <span style="font-size:12px;color:var(--muted);font-weight:500">· ${arr.length} conta(s)</span></h3>
+        <span class="num" style="font-size:14px;color:var(--muted)">${money(subt)}</span></div>
+        <div class="cards" style="margin-bottom:18px">${arr.map(cardConta).join("")}</div>`;
+    }).join("");
+  }
+  c.innerHTML=seg+corpo+`<div class="card" style="display:flex;justify-content:space-between;align-items:center"><div class="lbl">Total (patrimônio líquido em R$)</div><div class="num" style="font-size:21px;font-weight:600">${money(patrimonio())}</div></div>
   <div style="text-align:center;color:var(--muted);font-size:13px;margin-top:12px">Toque em uma conta para abrir e lançar diretamente nela.</div>`;
+  const segBtns=document.querySelectorAll("#agrSeg button");
+  segBtns.forEach(b=>b.onclick=()=>setContaAgrupar(b.dataset.a));
 }
 let contaAbertaId=null;
 let importPresetConta=null;
@@ -587,7 +636,9 @@ function movimentosConta(id){
       if(l.contaId===id)efeito=-Math.abs(l.valor);
       else{const orig=contaPorId(l.contaId);let v=Math.abs(l.valor);if(orig&&(orig.moeda||"BRL")!==m)v=converter(v,orig.moeda||"BRL",m);efeito=v;}
     }else efeito=l.valor;
-    saldo+=efeito;out.push({l,efeito,saldo});
+    const ativo=!cancelado(l);
+    if(ativo)saldo+=efeito;
+    out.push({l,efeito,saldo,ativo});
   }
   return out;
 }
@@ -620,14 +671,16 @@ function limparLancamentosConta(id){
   alert(n+" lançamento(s) removido(s). Agora você pode reimportar o extrato.");
 }
 function tabelaConta(movs,m){
-  return`<table><thead><tr><th>Data</th><th>Descrição</th><th class="hide">Categoria</th><th class="r">Valor</th><th class="r hide">Saldo</th><th></th></tr></thead><tbody>
-   ${movs.map(({l,efeito,saldo})=>{
+  return`<table><thead><tr><th style="width:28px"></th><th>Data</th><th>Descrição</th><th class="hide">Categoria</th><th class="r">Valor</th><th class="r hide">Saldo</th><th></th></tr></thead><tbody>
+   ${movs.map(({l,efeito,saldo,ativo})=>{
      const transf=l.tipo==="transferencia";
      const outra=transf?(l.contaId===contaAbertaId?contaPorId(l.contaDestinoId):contaPorId(l.contaId)):null;
-     return`<tr><td class="num">${fmtData(l.data)}</td>
+     const ri=(ativo===false)?' style="opacity:.55"':'';
+     const risc=(ativo===false)?'text-decoration:line-through':'';
+     return`<tr${ri}><td>${seloStatus(l)}</td><td class="num">${fmtData(l.data)}</td>
        <td>${esc(l.descricao||(transf?"Transferência":"(sem descrição)"))}${l.memo?`<div style="font-size:12px;color:var(--muted)">${esc(l.memo)}</div>`:""}${transf?`<div style="font-size:12px;color:var(--muted)">${l.contaId===contaAbertaId?"→ ":"← "}${esc(outra?nomeContaVis(outra.id):"?")}</div>`:""}</td>
        <td class="hide">${l.categoria?`<span class="tag ${efeito>=0?'g':'r'}">${esc(l.categoria)}</span>`:""}</td>
-       <td class="r num ${efeito>=0?'pos':'neg'}">${moneyM(efeito,m)}</td>
+       <td class="r num ${efeito>=0?'pos':'neg'}" style="${risc}">${moneyM(efeito,m)}</td>
        <td class="r num hide" style="color:var(--muted)">${moneyM(saldo,m)}</td>
        <td class="r">${podeEditar()?`<div class="row-actions"><button class="iconbtn" onclick="modalLancamento('${l.id}')">✎</button><button class="iconbtn" onclick="excluirLanc('${l.id}')">🗑</button></div>`:""}</td></tr>`;
    }).join("")}
@@ -824,7 +877,7 @@ function lerConfigRel(){
 }
 function gerarRelatorio(){relAtual=lerConfigRel();renderRelatorio();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
 function lancsRelatorio(r){
-  return lancamentosOrdenados().filter(lancEhVisivel).filter(l=>l.tipo!=="transferencia").filter(l=>{
+  return lancamentosOrdenados().filter(lancEhVisivel).filter(l=>l.tipo!=="transferencia"&&!cancelado(l)).filter(l=>{
     if(r.de&&l.data<r.de)return false;
     if(r.ate&&l.data>r.ate)return false;
     if(r.contas&&!r.contas.includes(l.contaId))return false;
@@ -1047,7 +1100,7 @@ function confirmarImport(){
   let n=0;
   importBuffer.linhas.forEach(l=>{
     if(!l.usar)return;
-    state.lancamentos.push({id:uid(),data:l.data,contaId,categoria:"",descricao:l.descricao,memo:l.memo||"",valor:l.valor,tipo:l.valor>=0?"receita":"despesa",fitid:l.fitid||null,_t:Date.now()});
+    state.lancamentos.push({id:uid(),data:l.data,contaId,categoria:"",descricao:l.descricao,memo:l.memo||"",valor:l.valor,tipo:l.valor>=0?"receita":"despesa",fitid:l.fitid||null,status:"N",_t:Date.now()});
     n++;
   });
   salvar();importBuffer=null;
@@ -1247,7 +1300,10 @@ function modalConta(id,tipoForcado){
         <option value="USD" ${moedaAtual==="USD"?"selected":""}>Dólar (US$)</option>
       </select></div>
     </div>
-    <div class="field"><label>Instituição (opcional)</label><input type="text" id="cInst" placeholder="Banco/corretora" value="${c?esc(c.instituicao||""):""}"></div>
+    <div class="field split">
+      <div><label>Instituição (opcional)</label><input type="text" id="cInst" placeholder="Banco/corretora" value="${c?esc(c.instituicao||""):""}"></div>
+      <div><label>Titular (opcional)</label><input type="text" id="cTit" placeholder="Ex.: Orquidea, Vanessa..." value="${c?esc(c.titular||""):""}"></div>
+    </div>
     ${ehAdmin()?`<div class="field"><label>Uso da conta</label>
       <div class="seg" id="cUsoSeg">
         <button type="button" data-p="0" class="${(c&&c.pessoal)?'':'on tr'}">🏢 Empresa</button>
@@ -1262,7 +1318,7 @@ function modalConta(id,tipoForcado){
       // pessoal: só o admin controla; para os demais, mantém o valor atual (novas contas = empresa)
       const pessoalEl=document.getElementById("cPessoal");
       const pessoal=ehAdmin()?(pessoalEl&&pessoalEl.value==="1"):(c?!!c.pessoal:false);
-      const dados={nome,tipo:cTipo.value,moeda:cMoeda.value,instituicao:cInst.value.trim(),saldoInicial:parseFloat(cSaldo.value)||0,pessoal};
+      const dados={nome,tipo:cTipo.value,moeda:cMoeda.value,instituicao:cInst.value.trim(),titular:document.getElementById("cTit").value.trim(),saldoInicial:parseFloat(cSaldo.value)||0,pessoal};
       if(c)Object.assign(c,dados);else state.contas.push({id:uid(),...dados});
       salvar();fecharModal();render();
     }}]);

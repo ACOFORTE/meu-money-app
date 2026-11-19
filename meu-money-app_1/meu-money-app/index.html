@@ -248,8 +248,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.1";
-const APP_VERSION_DATA="19/11/2026 · relatórios p/ contabilidade (PDF/Excel, entradas×saídas) e resumo gerencial receitas×despesas";
+const APP_VERSION="4.2";
+const APP_VERSION_DATA="19/11/2026 · relatórios com moeda por conta (US$/R$) e botão p/ converter em R$";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -806,6 +806,7 @@ function modalAtualizarValor(id){
 /* ---------- RELATÓRIOS ---------- */
 let relAtual=null; // config do último relatório gerado
 let relPend=null;  // config pendente (ex.: ao carregar favorito) p/ pré-marcar a tela
+let relVista="det"; // "det" = relatório detalhado, "res" = resumo (p/ alternar moeda)
 function vRelatorios(c,sub,ta){
   if(lancamentosVisiveis().length===0){c.innerHTML=`<div class="panel"><div class="empty"><div class="em-ic">◔</div><h4>Sem dados ainda</h4><p>Lance ou importe movimentações para gerar relatórios.</p></div></div>`;return;}
   const lancs=lancamentosVisiveis().filter(l=>l.tipo!=="transferencia");
@@ -853,6 +854,9 @@ function vRelatorios(c,sub,ta){
        <div class="field" style="margin:0"><label>Colunas de valor</label><select id="rColunas">
          ${[["unico","Valor único"],["es","Entradas e Saídas (separadas)"]].map(([v,n])=>`<option value="${v}" ${(p.colunas||"unico")===v?"selected":""}>${n}</option>`).join("")}
        </select></div>
+       <div class="field" style="margin:0"><label>Moeda dos valores</label><select id="rMoeda">
+         ${[["nativa","Cada conta na sua moeda (US$ / R$)"],["real","Converter tudo em R$"]].map(([v,n])=>`<option value="${v}" ${(p.moeda||"nativa")===v?"selected":""}>${n}</option>`).join("")}
+       </select></div>
      </div>
 
      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px">
@@ -884,9 +888,17 @@ function lerConfigRel(){
     pagamentos:sel("chk-pag"),
     texto:document.getElementById("rTexto").value.trim(),
     subtotal:document.getElementById("rSubtotal").value,
-    colunas:(document.getElementById("rColunas")||{}).value||"unico"
+    colunas:(document.getElementById("rColunas")||{}).value||"unico",
+    moeda:(document.getElementById("rMoeda")||{}).value||"nativa"
   };
 }
+/* valor de exibição de um lançamento conforme a moeda escolhida no relatório */
+function _dvRel(r,l){return (r&&r.moeda==="real")?{m:"BRL",v:emReal(l.valor,moedaConta(l.contaId))}:{m:moedaConta(l.contaId),v:l.valor};}
+/* formata um mapa {moeda:valor} — junta várias moedas com quebra de linha */
+function _fmtMapRel(map){const ks=Object.keys(map).filter(m=>Math.round((map[m]||0)*100)!==0).sort();if(!ks.length)return moneyM(0,"BRL");return ks.map(m=>moneyM(map[m],m)).join("<br>");}
+function _corTotRel(map){const ks=Object.keys(map).filter(m=>Math.round((map[m]||0)*100)!==0);return ks.length===1?(map[ks[0]]>=0?'pos':'neg'):'';}
+/* alterna entre moeda nativa e R$ no relatório já gerado */
+function alternarMoedaRel(){if(!relAtual)return;relAtual.moeda=(relAtual.moeda==="real"?"nativa":"real");relVista==="res"?renderResumo():renderRelatorio();}
 function gerarRelatorio(){relAtual=lerConfigRel();renderRelatorio();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
 function lancsRelatorio(r){
   return lancamentosOrdenados().filter(lancEhVisivel).filter(l=>l.tipo!=="transferencia"&&!cancelado(l)).filter(l=>{
@@ -910,19 +922,17 @@ function chaveGrupoRel(l,subtotal){
   }
 }
 function renderRelatorio(){
-  const r=relAtual;const arr=lancsRelatorio(r);
+  const r=relAtual;relVista="det";const arr=lancsRelatorio(r);
   const o=document.getElementById("relOutput");if(!o)return;
   const temUSD=arr.some(l=>moedaConta(l.contaId)==="USD");
+  const real=r.moeda==="real";
   const periodo=(r.de||r.ate)?`${r.de?fmtData(r.de):"início"} a ${r.ate?fmtData(r.ate):"hoje"}`:"todo o período";
   if(!arr.length){o.innerHTML=`<div class="panel"><div class="panel-h"><h3>${esc(r.titulo)}</h3></div><div class="empty" style="padding:34px"><p>Nenhum lançamento encontrado com esses filtros.</p></div></div>`;return;}
 
   const es=r.colunas==="es"; // colunas Entrada/Saída separadas
-  const vR=l=>emReal(l.valor,moedaConta(l.contaId));
-  const somaT=ls=>ls.reduce((a,l)=>a+vR(l),0);
-  const somaE=ls=>ls.reduce((a,l)=>a+Math.max(vR(l),0),0);
-  const somaS=ls=>ls.reduce((a,l)=>a+Math.min(vR(l),0),0);
-  const celL=l=>{const v=vR(l);return es?`<td class="r num pos">${v>0?money(v):""}</td><td class="r num neg">${v<0?money(-v):""}</td>`:`<td class="r num ${v>=0?'pos':'neg'}">${money(v)}</td>`;};
-  const celT=ls=>es?`<td class="r num pos">${money(somaE(ls))}</td><td class="r num neg">${money(-somaS(ls))}</td>`:`<td class="r num ${somaT(ls)>=0?'pos':'neg'}">${money(somaT(ls))}</td>`;
+  const agr=ls=>{const tot={},pos={},neg={};ls.forEach(l=>{const{m,v}=_dvRel(r,l);tot[m]=(tot[m]||0)+v;if(v>0)pos[m]=(pos[m]||0)+v;else if(v<0)neg[m]=(neg[m]||0)+v;});const negAbs={};Object.keys(neg).forEach(m=>negAbs[m]=-neg[m]);return{tot,pos,negAbs};};
+  const celL=l=>{const{m,v}=_dvRel(r,l);const f=moneyM(Math.abs(v),m);return es?`<td class="r num pos">${v>0?f:""}</td><td class="r num neg">${v<0?f:""}</td>`:`<td class="r num ${v>=0?'pos':'neg'}">${moneyM(v,m)}</td>`;};
+  const celT=ls=>{const{tot,pos,negAbs}=agr(ls);return es?`<td class="r num pos">${_fmtMapRel(pos)}</td><td class="r num neg">${_fmtMapRel(negAbs)}</td>`:`<td class="r num ${_corTotRel(tot)}">${_fmtMapRel(tot)}</td>`;};
   const linha=l=>`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td>${celL(l)}</tr>`;
   const nCols=es?6:5;
 
@@ -939,11 +949,13 @@ function renderRelatorio(){
     });
   }
   const cabVal=es?`<th class="r">Entrada</th><th class="r">Saída</th>`:`<th class="r">Valor</th>`;
+  const notaMoeda=temUSD?(real?" · valores convertidos em R$":" · cada conta na sua moeda (US$ / R$)"):"";
+  const btnMoeda=temUSD?`<button class="btn sm" onclick="alternarMoedaRel()">${real?"🌎 Ver em moeda original":"💱 Converter tudo em R$"}</button>`:"";
 
   o.innerHTML=`
    <div class="panel">
-     <div class="panel-h"><div><h3>${esc(r.titulo)}</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · ${arr.length} lançamento(s)${temUSD?" · valores em R$":""}</div></div>
-       <div class="no-print" style="display:flex;gap:8px"><button class="btn sm" onclick="exportarRelatorioCSV()">📊 Excel/CSV</button><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
+     <div class="panel-h"><div><h3>${esc(r.titulo)}</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · ${arr.length} lançamento(s)${notaMoeda}</div></div>
+       <div class="no-print" style="display:flex;gap:8px;flex-wrap:wrap">${btnMoeda}<button class="btn sm" onclick="exportarRelatorioCSV()">📊 Excel/CSV</button><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
      <div class="panel-b"><table><thead><tr><th>Data</th><th>Pagamento</th><th>Texto (memo)</th><th>Categoria</th>${cabVal}</tr></thead>
        <tbody>${corpo}</tbody>
        <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td colspan="4" class="r" style="font-size:14px">TOTAL GERAL</td>${celT(arr)}</tr></tfoot>
@@ -956,37 +968,45 @@ function exportarRelatorioCSV(){
   const arr=lancsRelatorio(r);
   if(!arr.length){alert("Não há lançamentos no relatório para exportar.");return;}
   const num2=v=>v?Math.abs(v).toFixed(2).replace(".",","):"";
-  const linhas=[["Data","Descrição/Pagamento","Memo","Categoria","Conta","Instituição","Titular","Situação","Entrada (R$)","Saída (R$)"]];
-  arr.forEach(l=>{const co=contaPorId(l.contaId)||{};const v=emReal(l.valor,moedaConta(l.contaId));
-    linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",co.nome||"",instDe(co),titularDe(co),statusLanc(l),v>0?num2(v):"",v<0?num2(v):""]);});
-  const tE=arr.reduce((a,l)=>a+Math.max(emReal(l.valor,moedaConta(l.contaId)),0),0);
-  const tS=arr.reduce((a,l)=>a+Math.min(emReal(l.valor,moedaConta(l.contaId)),0),0);
-  linhas.push(["","","","","","","","TOTAL",num2(tE),num2(tS)]);
+  const rot=m=>m==="USD"?"US$":"R$";
+  const linhas=[["Data","Descrição/Pagamento","Memo","Categoria","Conta","Instituição","Titular","Moeda","Situação","Entrada","Saída"]];
+  const tot={}; // por moeda: {e,s}
+  arr.forEach(l=>{const co=contaPorId(l.contaId)||{};const{m,v}=_dvRel(r,l);
+    const g=tot[m]=tot[m]||{e:0,s:0};if(v>0)g.e+=v;else g.s+=v;
+    linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",co.nome||"",instDe(co),titularDe(co),rot(m),statusLanc(l),v>0?num2(v):"",v<0?num2(v):""]);});
+  Object.keys(tot).sort().forEach(m=>{linhas.push(["","","","","","","",rot(m),"TOTAL",num2(tot[m].e),num2(tot[m].s)]);});
   const csv=linhas.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
   baixar(`relatorio-${(r.titulo||"relatorio").replace(/[^\w]+/g,"_")}-${hojeISO()}.csv`,"﻿"+csv,"text/csv");
 }
 /* ---- Resumo gerencial: receitas × despesas por mês e por categoria ---- */
 function gerarResumo(){relAtual=lerConfigRel();renderResumo();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
 function renderResumo(){
-  const r=relAtual;const arr=lancsRelatorio(r);
+  const r=relAtual;relVista="res";const arr=lancsRelatorio(r);
   const o=document.getElementById("relOutput");if(!o)return;
+  const temUSD=arr.some(l=>moedaConta(l.contaId)==="USD");
+  const real=r.moeda==="real";
   const periodo=(r.de||r.ate)?`${r.de?fmtData(r.de):"início"} a ${r.ate?fmtData(r.ate):"hoje"}`:"todo o período";
   if(!arr.length){o.innerHTML=`<div class="panel"><div class="panel-h"><h3>${esc(r.titulo)} — Resumo</h3></div><div class="empty" style="padding:34px"><p>Nenhum lançamento encontrado com esses filtros.</p></div></div>`;return;}
-  const vR=l=>emReal(l.valor,moedaConta(l.contaId));
-  const meses={};arr.forEach(l=>{const m=mesDe(l.data);const g=meses[m]=meses[m]||{r:0,d:0};const v=vR(l);if(v>=0)g.r+=v;else g.d+=v;});
-  let totR=0,totD=0;
-  const linhasMes=Object.keys(meses).sort().map(m=>{const{r:rr,d:dd}=meses[m];totR+=rr;totD+=dd;const res=rr+dd;return`<tr><td>${nomeMes(m)}</td><td class="r num pos">${money(rr)}</td><td class="r num neg">${money(-dd)}</td><td class="r num ${res>=0?'pos':'neg'}">${money(res)}</td></tr>`;}).join("");
-  const cats={};arr.forEach(l=>{const k=l.categoria||"(sem categoria)";const g=cats[k]=cats[k]||{r:0,d:0};const v=vR(l);if(v>=0)g.r+=v;else g.d+=v;});
-  const linhasCat=Object.keys(cats).sort((a,b)=>a.localeCompare(b,"pt-BR")).map(k=>{const{r:rr,d:dd}=cats[k];const res=rr+dd;return`<tr><td>${esc(k)}</td><td class="r num pos">${rr?money(rr):""}</td><td class="r num neg">${dd?money(-dd):""}</td><td class="r num ${res>=0?'pos':'neg'}">${money(res)}</td></tr>`;}).join("");
+  // soma: acumula por moeda em mapas {moeda:valor}
+  const add=(map,m,v)=>{map[m]=(map[m]||0)+v;};
+  const resMap=(rr,dd)=>{const o={};Object.keys(rr).forEach(m=>add(o,m,rr[m]));Object.keys(dd).forEach(m=>add(o,m,dd[m]));return o;};
+  const meses={};arr.forEach(l=>{const mes=mesDe(l.data);const{m,v}=_dvRel(r,l);const g=meses[mes]=meses[mes]||{r:{},d:{}};if(v>=0)add(g.r,m,v);else add(g.d,m,-v);});
+  const totR={},totD={};
+  const linhasMes=Object.keys(meses).sort().map(mes=>{const{r:rr,d:dd}=meses[mes];Object.keys(rr).forEach(m=>add(totR,m,rr[m]));Object.keys(dd).forEach(m=>add(totD,m,dd[m]));const res={};Object.keys(rr).forEach(m=>add(res,m,rr[m]));Object.keys(dd).forEach(m=>add(res,m,-dd[m]));return`<tr><td>${nomeMes(mes)}</td><td class="r num pos">${_fmtMapRel(rr)}</td><td class="r num neg">${_fmtMapRel(dd)}</td><td class="r num ${_corTotRel(res)}">${_fmtMapRel(res)}</td></tr>`;}).join("");
+  const totRes={};Object.keys(totR).forEach(m=>add(totRes,m,totR[m]));Object.keys(totD).forEach(m=>add(totRes,m,-totD[m]));
+  const cats={};arr.forEach(l=>{const k=l.categoria||"(sem categoria)";const{m,v}=_dvRel(r,l);const g=cats[k]=cats[k]||{r:{},d:{}};if(v>=0)add(g.r,m,v);else add(g.d,m,-v);});
+  const linhasCat=Object.keys(cats).sort((a,b)=>a.localeCompare(b,"pt-BR")).map(k=>{const{r:rr,d:dd}=cats[k];const res=resMap(rr,Object.fromEntries(Object.keys(dd).map(m=>[m,-dd[m]])));return`<tr><td>${esc(k)}</td><td class="r num pos">${Object.keys(rr).length?_fmtMapRel(rr):""}</td><td class="r num neg">${Object.keys(dd).length?_fmtMapRel(dd):""}</td><td class="r num ${_corTotRel(res)}">${_fmtMapRel(res)}</td></tr>`;}).join("");
+  const notaMoeda=temUSD?(real?" · convertido em R$":" · por moeda (US$ / R$)"):"";
+  const btnMoeda=temUSD?`<button class="btn sm" onclick="alternarMoedaRel()">${real?"🌎 Ver em moeda original":"💱 Converter tudo em R$"}</button>`:"";
   o.innerHTML=`
    <div class="panel">
-     <div class="panel-h"><div><h3>${esc(r.titulo)} — Resumo</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · receitas × despesas</div></div>
-       <div class="no-print" style="display:flex;gap:8px"><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
+     <div class="panel-h"><div><h3>${esc(r.titulo)} — Resumo</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · receitas × despesas${notaMoeda}</div></div>
+       <div class="no-print" style="display:flex;gap:8px;flex-wrap:wrap">${btnMoeda}<button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
      <div class="panel-b">
        <h4 style="margin:2px 0 8px">Por mês</h4>
        <table><thead><tr><th>Mês</th><th class="r">Receitas</th><th class="r">Despesas</th><th class="r">Resultado</th></tr></thead>
          <tbody>${linhasMes}</tbody>
-         <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td class="r">TOTAL</td><td class="r num pos">${money(totR)}</td><td class="r num neg">${money(-totD)}</td><td class="r num ${(totR+totD)>=0?'pos':'neg'}">${money(totR+totD)}</td></tr></tfoot></table>
+         <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td class="r">TOTAL</td><td class="r num pos">${_fmtMapRel(totR)}</td><td class="r num neg">${_fmtMapRel(totD)}</td><td class="r num ${_corTotRel(totRes)}">${_fmtMapRel(totRes)}</td></tr></tfoot></table>
        <h4 style="margin:20px 0 8px">Por categoria</h4>
        <table><thead><tr><th>Categoria</th><th class="r">Receitas</th><th class="r">Despesas</th><th class="r">Saldo</th></tr></thead>
          <tbody>${linhasCat}</tbody></table>

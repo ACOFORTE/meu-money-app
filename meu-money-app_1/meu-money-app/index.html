@@ -94,9 +94,10 @@
   .tag.g{background:var(--green-soft);color:var(--green)} .tag.r{background:var(--red-soft);color:var(--red)} .tag.b{background:var(--brass-soft);color:#8a6420}
   .acctdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
 
-  .row-actions{display:flex;gap:4px;justify-content:flex-end;opacity:0;transition:.1s}
+  .row-actions{display:flex;gap:4px;justify-content:flex-end;opacity:.75;transition:.1s}
   tr:hover .row-actions{opacity:1}
-  .iconbtn{border:0;background:none;color:var(--muted-soft);padding:3px 6px;border-radius:6px;font-size:14px}
+  @media (hover:none){.row-actions{opacity:1}} /* celular/tablet: sempre visível */
+  .iconbtn{border:0;background:none;color:var(--muted);padding:5px 8px;border-radius:6px;font-size:15px;cursor:pointer}
   .iconbtn:hover{background:var(--line);color:var(--ink)}
 
   .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px}
@@ -248,8 +249,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.2";
-const APP_VERSION_DATA="19/11/2026 · relatórios com moeda por conta (US$/R$) e botão p/ converter em R$";
+const APP_VERSION="4.3";
+const APP_VERSION_DATA="19/11/2026 · botões de editar/excluir sempre visíveis (categorias e lançamentos), inclusive no celular";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},

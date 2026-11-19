@@ -171,6 +171,13 @@
     .panel-h{border-bottom:1px solid #ccc}
     tbody tr:hover{background:none}
     .row-actions{display:none}
+    .grouphead{background:#eee !important;color:#000 !important;border-top:2px solid #000;border-bottom:1px solid #000;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .subtotal td{background:#f6f6f6 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .tag{color:#000 !important;background:none !important;border:1px solid #999;padding:1px 4px}
+    .pos{color:#000 !important}
+    .neg{color:#000 !important}
+    table{font-size:11px}
+    h3{font-size:16px}
   }
   /* Autenticação */
   .app{display:none}
@@ -241,8 +248,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.0";
-const APP_VERSION_DATA="17/11/2026 · contas agrupáveis, categorias A–Z e situação R/N/C dos lançamentos";
+const APP_VERSION="4.1";
+const APP_VERSION_DATA="19/11/2026 · relatórios p/ contabilidade (PDF/Excel, entradas×saídas) e resumo gerencial receitas×despesas";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -841,12 +848,16 @@ function vRelatorios(c,sub,ta){
      <div class="relgrid" style="margin-top:16px">
        <div class="field" style="margin:0"><label>Texto (contém no Memo)</label><input type="text" id="rTexto" value="${esc(p.texto||"")}" placeholder="ex.: orla 1, nota 123..."></div>
        <div class="field" style="margin:0"><label>Subtotal por</label><select id="rSubtotal">
-         ${[["nenhum","Nenhum"],["conta","Conta"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
+         ${[["nenhum","Nenhum"],["conta","Conta"],["instituicao","Instituição"],["titular","Titular"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
+       </select></div>
+       <div class="field" style="margin:0"><label>Colunas de valor</label><select id="rColunas">
+         ${[["unico","Valor único"],["es","Entradas e Saídas (separadas)"]].map(([v,n])=>`<option value="${v}" ${(p.colunas||"unico")===v?"selected":""}>${n}</option>`).join("")}
        </select></div>
      </div>
 
      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px">
-       <button class="btn brass" onclick="gerarRelatorio()">Gerar relatório</button>
+       <button class="btn brass" onclick="gerarRelatorio()">Gerar relatório detalhado</button>
+       <button class="btn" onclick="gerarResumo()">📊 Resumo (receitas × despesas)</button>
        ${podeEditar()?'<button class="btn" onclick="salvarFavoritoRel()">★ Salvar como favorito</button>':""}
      </div>
    </div></div>
@@ -872,7 +883,8 @@ function lerConfigRel(){
     categorias:sel("chk-cat"),
     pagamentos:sel("chk-pag"),
     texto:document.getElementById("rTexto").value.trim(),
-    subtotal:document.getElementById("rSubtotal").value
+    subtotal:document.getElementById("rSubtotal").value,
+    colunas:(document.getElementById("rColunas")||{}).value||"unico"
   };
 }
 function gerarRelatorio(){relAtual=lerConfigRel();renderRelatorio();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
@@ -887,6 +899,16 @@ function lancsRelatorio(r){
     return true;
   }).sort((a,b)=>a.data<b.data?-1:a.data>b.data?1:0);
 }
+function chaveGrupoRel(l,subtotal){
+  const co=contaPorId(l.contaId)||{};
+  switch(subtotal){
+    case "conta": return co.nome||"—";
+    case "instituicao": return instDe(co);
+    case "titular": return titularDe(co);
+    case "pagamento": return l.descricao||"(sem descrição)";
+    default: return l.categoria||"(sem categoria)";
+  }
+}
 function renderRelatorio(){
   const r=relAtual;const arr=lancsRelatorio(r);
   const o=document.getElementById("relOutput");if(!o)return;
@@ -894,32 +916,81 @@ function renderRelatorio(){
   const periodo=(r.de||r.ate)?`${r.de?fmtData(r.de):"início"} a ${r.ate?fmtData(r.ate):"hoje"}`:"todo o período";
   if(!arr.length){o.innerHTML=`<div class="panel"><div class="panel-h"><h3>${esc(r.titulo)}</h3></div><div class="empty" style="padding:34px"><p>Nenhum lançamento encontrado com esses filtros.</p></div></div>`;return;}
 
-  const linha=l=>`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td><td class="r num ${emReal(l.valor,moedaConta(l.contaId))>=0?'pos':'neg'}">${money(emReal(l.valor,moedaConta(l.contaId)))}</td></tr>`;
-  let corpo="",totalGeral=0;
-  const soma=ls=>ls.reduce((a,l)=>a+emReal(l.valor,moedaConta(l.contaId)),0);
-  totalGeral=soma(arr);
+  const es=r.colunas==="es"; // colunas Entrada/Saída separadas
+  const vR=l=>emReal(l.valor,moedaConta(l.contaId));
+  const somaT=ls=>ls.reduce((a,l)=>a+vR(l),0);
+  const somaE=ls=>ls.reduce((a,l)=>a+Math.max(vR(l),0),0);
+  const somaS=ls=>ls.reduce((a,l)=>a+Math.min(vR(l),0),0);
+  const celL=l=>{const v=vR(l);return es?`<td class="r num pos">${v>0?money(v):""}</td><td class="r num neg">${v<0?money(-v):""}</td>`:`<td class="r num ${v>=0?'pos':'neg'}">${money(v)}</td>`;};
+  const celT=ls=>es?`<td class="r num pos">${money(somaE(ls))}</td><td class="r num neg">${money(-somaS(ls))}</td>`:`<td class="r num ${somaT(ls)>=0?'pos':'neg'}">${money(somaT(ls))}</td>`;
+  const linha=l=>`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td>${celL(l)}</tr>`;
+  const nCols=es?6:5;
 
+  let corpo="";
   if(r.subtotal==="nenhum"){
     corpo=arr.map(linha).join("");
   }else{
-    const chave=l=>r.subtotal==="conta"?(contaPorId(l.contaId)||{}).nome||"—":r.subtotal==="pagamento"?(l.descricao||"(sem descrição)"):(l.categoria||"(sem categoria)");
-    const grupos={};arr.forEach(l=>{const k=chave(l);(grupos[k]=grupos[k]||[]).push(l);});
+    const grupos={};arr.forEach(l=>{const k=chaveGrupoRel(l,r.subtotal);(grupos[k]=grupos[k]||[]).push(l);});
     Object.keys(grupos).sort((a,b)=>a.localeCompare(b,"pt-BR")).forEach(k=>{
-      const ls=grupos[k];const sub=soma(ls);
-      corpo+=`<tr class="grouphead"><td colspan="5">${esc(k)}</td></tr>`;
+      const ls=grupos[k];
+      corpo+=`<tr class="grouphead"><td colspan="${nCols}">${esc(k)}</td></tr>`;
       corpo+=ls.map(linha).join("");
-      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(k)}</td><td class="r num ${sub>=0?'pos':'neg'}">${money(sub)}</td></tr>`;
+      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(k)}</td>${celT(ls)}</tr>`;
     });
   }
+  const cabVal=es?`<th class="r">Entrada</th><th class="r">Saída</th>`:`<th class="r">Valor</th>`;
 
   o.innerHTML=`
    <div class="panel">
      <div class="panel-h"><div><h3>${esc(r.titulo)}</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · ${arr.length} lançamento(s)${temUSD?" · valores em R$":""}</div></div>
-       <button class="btn sm no-print" onclick="window.print()">🖨 Imprimir</button></div>
-     <div class="panel-b"><table><thead><tr><th>Data</th><th>Pagamento</th><th>Texto (memo)</th><th>Categoria</th><th class="r">Valor</th></tr></thead>
+       <div class="no-print" style="display:flex;gap:8px"><button class="btn sm" onclick="exportarRelatorioCSV()">📊 Excel/CSV</button><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
+     <div class="panel-b"><table><thead><tr><th>Data</th><th>Pagamento</th><th>Texto (memo)</th><th>Categoria</th>${cabVal}</tr></thead>
        <tbody>${corpo}</tbody>
-       <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td colspan="4" class="r" style="font-size:14px">TOTAL GERAL</td><td class="r num ${totalGeral>=0?'pos':'neg'}" style="font-size:15px">${money(totalGeral)}</td></tr></tfoot>
+       <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td colspan="4" class="r" style="font-size:14px">TOTAL GERAL</td>${celT(arr)}</tr></tfoot>
      </table></div>
+   </div>`;
+}
+/* Exporta o relatório ATUAL (já filtrado) para CSV que abre no Excel, com Entrada/Saída separadas. */
+function exportarRelatorioCSV(){
+  const r=relAtual;if(!r)return;
+  const arr=lancsRelatorio(r);
+  if(!arr.length){alert("Não há lançamentos no relatório para exportar.");return;}
+  const num2=v=>v?Math.abs(v).toFixed(2).replace(".",","):"";
+  const linhas=[["Data","Descrição/Pagamento","Memo","Categoria","Conta","Instituição","Titular","Situação","Entrada (R$)","Saída (R$)"]];
+  arr.forEach(l=>{const co=contaPorId(l.contaId)||{};const v=emReal(l.valor,moedaConta(l.contaId));
+    linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",co.nome||"",instDe(co),titularDe(co),statusLanc(l),v>0?num2(v):"",v<0?num2(v):""]);});
+  const tE=arr.reduce((a,l)=>a+Math.max(emReal(l.valor,moedaConta(l.contaId)),0),0);
+  const tS=arr.reduce((a,l)=>a+Math.min(emReal(l.valor,moedaConta(l.contaId)),0),0);
+  linhas.push(["","","","","","","","TOTAL",num2(tE),num2(tS)]);
+  const csv=linhas.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
+  baixar(`relatorio-${(r.titulo||"relatorio").replace(/[^\w]+/g,"_")}-${hojeISO()}.csv`,"﻿"+csv,"text/csv");
+}
+/* ---- Resumo gerencial: receitas × despesas por mês e por categoria ---- */
+function gerarResumo(){relAtual=lerConfigRel();renderResumo();const o=document.getElementById("relOutput");if(o)o.scrollIntoView({behavior:"smooth",block:"start"});}
+function renderResumo(){
+  const r=relAtual;const arr=lancsRelatorio(r);
+  const o=document.getElementById("relOutput");if(!o)return;
+  const periodo=(r.de||r.ate)?`${r.de?fmtData(r.de):"início"} a ${r.ate?fmtData(r.ate):"hoje"}`:"todo o período";
+  if(!arr.length){o.innerHTML=`<div class="panel"><div class="panel-h"><h3>${esc(r.titulo)} — Resumo</h3></div><div class="empty" style="padding:34px"><p>Nenhum lançamento encontrado com esses filtros.</p></div></div>`;return;}
+  const vR=l=>emReal(l.valor,moedaConta(l.contaId));
+  const meses={};arr.forEach(l=>{const m=mesDe(l.data);const g=meses[m]=meses[m]||{r:0,d:0};const v=vR(l);if(v>=0)g.r+=v;else g.d+=v;});
+  let totR=0,totD=0;
+  const linhasMes=Object.keys(meses).sort().map(m=>{const{r:rr,d:dd}=meses[m];totR+=rr;totD+=dd;const res=rr+dd;return`<tr><td>${nomeMes(m)}</td><td class="r num pos">${money(rr)}</td><td class="r num neg">${money(-dd)}</td><td class="r num ${res>=0?'pos':'neg'}">${money(res)}</td></tr>`;}).join("");
+  const cats={};arr.forEach(l=>{const k=l.categoria||"(sem categoria)";const g=cats[k]=cats[k]||{r:0,d:0};const v=vR(l);if(v>=0)g.r+=v;else g.d+=v;});
+  const linhasCat=Object.keys(cats).sort((a,b)=>a.localeCompare(b,"pt-BR")).map(k=>{const{r:rr,d:dd}=cats[k];const res=rr+dd;return`<tr><td>${esc(k)}</td><td class="r num pos">${rr?money(rr):""}</td><td class="r num neg">${dd?money(-dd):""}</td><td class="r num ${res>=0?'pos':'neg'}">${money(res)}</td></tr>`;}).join("");
+  o.innerHTML=`
+   <div class="panel">
+     <div class="panel-h"><div><h3>${esc(r.titulo)} — Resumo</h3><div style="font-size:12.5px;color:var(--muted)">${periodo} · receitas × despesas</div></div>
+       <div class="no-print" style="display:flex;gap:8px"><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button></div></div>
+     <div class="panel-b">
+       <h4 style="margin:2px 0 8px">Por mês</h4>
+       <table><thead><tr><th>Mês</th><th class="r">Receitas</th><th class="r">Despesas</th><th class="r">Resultado</th></tr></thead>
+         <tbody>${linhasMes}</tbody>
+         <tfoot><tr class="subtotal" style="border-top:2px solid var(--ink)"><td class="r">TOTAL</td><td class="r num pos">${money(totR)}</td><td class="r num neg">${money(-totD)}</td><td class="r num ${(totR+totD)>=0?'pos':'neg'}">${money(totR+totD)}</td></tr></tfoot></table>
+       <h4 style="margin:20px 0 8px">Por categoria</h4>
+       <table><thead><tr><th>Categoria</th><th class="r">Receitas</th><th class="r">Despesas</th><th class="r">Saldo</th></tr></thead>
+         <tbody>${linhasCat}</tbody></table>
+     </div>
    </div>`;
 }
 function salvarFavoritoRel(){

@@ -249,8 +249,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.3";
-const APP_VERSION_DATA="19/11/2026 · botões de editar/excluir sempre visíveis (categorias e lançamentos), inclusive no celular";
+const APP_VERSION="4.4";
+const APP_VERSION_DATA="21/11/2026 · subtotal por mês no relatório; coluna Entrada/Saída corrigida";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -850,7 +850,7 @@ function vRelatorios(c,sub,ta){
      <div class="relgrid" style="margin-top:16px">
        <div class="field" style="margin:0"><label>Texto (contém no Memo)</label><input type="text" id="rTexto" value="${esc(p.texto||"")}" placeholder="ex.: orla 1, nota 123..."></div>
        <div class="field" style="margin:0"><label>Subtotal por</label><select id="rSubtotal">
-         ${[["nenhum","Nenhum"],["conta","Conta"],["instituicao","Instituição"],["titular","Titular"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
+         ${[["nenhum","Nenhum"],["mes","Mês"],["conta","Conta"],["instituicao","Instituição"],["titular","Titular"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
        </select></div>
        <div class="field" style="margin:0"><label>Colunas de valor</label><select id="rColunas">
          ${[["unico","Valor único"],["es","Entradas e Saídas (separadas)"]].map(([v,n])=>`<option value="${v}" ${(p.colunas||"unico")===v?"selected":""}>${n}</option>`).join("")}
@@ -915,6 +915,7 @@ function lancsRelatorio(r){
 function chaveGrupoRel(l,subtotal){
   const co=contaPorId(l.contaId)||{};
   switch(subtotal){
+    case "mes": return mesDe(l.data);
     case "conta": return co.nome||"—";
     case "instituicao": return instDe(co);
     case "titular": return titularDe(co);
@@ -933,7 +934,8 @@ function renderRelatorio(){
   const es=r.colunas==="es"; // colunas Entrada/Saída separadas
   const agr=ls=>{const tot={},pos={},neg={};ls.forEach(l=>{const{m,v}=_dvRel(r,l);tot[m]=(tot[m]||0)+v;if(v>0)pos[m]=(pos[m]||0)+v;else if(v<0)neg[m]=(neg[m]||0)+v;});const negAbs={};Object.keys(neg).forEach(m=>negAbs[m]=-neg[m]);return{tot,pos,negAbs};};
   const celL=l=>{const{m,v}=_dvRel(r,l);const f=moneyM(Math.abs(v),m);return es?`<td class="r num pos">${v>0?f:""}</td><td class="r num neg">${v<0?f:""}</td>`:`<td class="r num ${v>=0?'pos':'neg'}">${moneyM(v,m)}</td>`;};
-  const celT=ls=>{const{tot,pos,negAbs}=agr(ls);return es?`<td class="r num pos">${_fmtMapRel(pos)}</td><td class="r num neg">${_fmtMapRel(negAbs)}</td>`:`<td class="r num ${_corTotRel(tot)}">${_fmtMapRel(tot)}</td>`;};
+  const fmtMapOrDash=map=>{const ks=Object.keys(map).filter(m=>Math.round((map[m]||0)*100)!==0);return ks.length?ks.sort().map(m=>moneyM(map[m],m)).join("<br>"):'<span style="color:var(--muted)">—</span>';};
+  const celT=ls=>{const{tot,pos,negAbs}=agr(ls);return es?`<td class="r num pos">${fmtMapOrDash(pos)}</td><td class="r num neg">${fmtMapOrDash(negAbs)}</td>`:`<td class="r num ${_corTotRel(tot)}">${_fmtMapRel(tot)}</td>`;};
   const linha=l=>`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td>${celL(l)}</tr>`;
   const nCols=es?6:5;
 
@@ -942,11 +944,15 @@ function renderRelatorio(){
     corpo=arr.map(linha).join("");
   }else{
     const grupos={};arr.forEach(l=>{const k=chaveGrupoRel(l,r.subtotal);(grupos[k]=grupos[k]||[]).push(l);});
-    Object.keys(grupos).sort((a,b)=>a.localeCompare(b,"pt-BR")).forEach(k=>{
+    // ordenação: mês = cronológica; demais = alfabética
+    const isMes=r.subtotal==="mes";
+    const chaves=Object.keys(grupos).sort(isMes?(a,b)=>a<b?-1:a>b?1:0:(a,b)=>a.localeCompare(b,"pt-BR"));
+    chaves.forEach(k=>{
       const ls=grupos[k];
-      corpo+=`<tr class="grouphead"><td colspan="${nCols}">${esc(k)}</td></tr>`;
+      const label=isMes?nomeMes(k):k; // exibe "Janeiro/2026" em vez de "2026-01"
+      corpo+=`<tr class="grouphead"><td colspan="${nCols}">${esc(label)}</td></tr>`;
       corpo+=ls.map(linha).join("");
-      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(k)}</td>${celT(ls)}</tr>`;
+      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(label)}</td>${celT(ls)}</tr>`;
     });
   }
   const cabVal=es?`<th class="r">Entrada</th><th class="r">Saída</th>`:`<th class="r">Valor</th>`;

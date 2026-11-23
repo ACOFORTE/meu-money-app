@@ -249,8 +249,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.6";
-const APP_VERSION_DATA="23/11/2026 · categoria no extrato bancário e subtotal por mês no relatório";
+const APP_VERSION="4.7";
+const APP_VERSION_DATA="23/11/2026 · datas do relatório conforme a moeda: contas US$ em mm/dd/aaaa e R$ em dd/mm/aaaa";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -355,6 +355,9 @@ const converter=(v,de,para)=>{const real=de==="USD"?v*cotacao():v;return para===
 const moedaConta=id=>{const c=contaPorId(id);return c?c.moeda||"BRL":"BRL";};
 const saldoContaReal=id=>emReal(saldoConta(id),moedaConta(id));
 const fmtData=iso=>{if(!iso)return"";const[y,m,d]=iso.split("-");return`${d}/${m}/${y}`;};
+/* data conforme a moeda: US$ -> mm/dd/aaaa (formato americano); R$ -> dd/mm/aaaa */
+const fmtDataM=(iso,moeda)=>{if(!iso)return"";const[y,m,d]=iso.split("-");return moeda==="USD"?`${m}/${d}/${y}`:`${d}/${m}/${y}`;};
+const fmtPeriodoM=(r,moeda)=>(r.de||r.ate)?`${r.de?fmtDataM(r.de,moeda):"início"} a ${r.ate?fmtDataM(r.ate,moeda):"hoje"}`:"todo o período";
 const hojeISO=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
 const mesDe=iso=>iso?iso.slice(0,7):"";
 const nomeMes=ym=>{const[y,m]=ym.split("-");return["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"][+m-1]+"/"+y.slice(2);};
@@ -951,14 +954,16 @@ function renderRelatorio(){
   const o=document.getElementById("relOutput");if(!o)return;
   const temUSD=arr.some(l=>moedaConta(l.contaId)==="USD");
   const real=r.moeda==="real";
-  const periodo=(r.de||r.ate)?`${r.de?fmtData(r.de):"início"} a ${r.ate?fmtData(r.ate):"hoje"}`:"todo o período";
+  const soUSD=arr.length&&arr.every(l=>moedaConta(l.contaId)==="USD")&&!real; // relatório só de contas US$ e sem conversão
+  const periodo=fmtPeriodoM(r,soUSD?"USD":"BRL");
   if(!arr.length){o.innerHTML=`<div class="panel"><div class="panel-h"><h3>${esc(r.titulo)}</h3></div><div class="empty" style="padding:34px"><p>Nenhum lançamento encontrado com esses filtros.</p></div></div>`;return;}
 
   const es=r.colunas==="es"; // colunas Entrada/Saída separadas
+  const dataLinha=l=>real?fmtData(l.data):fmtDataM(l.data,moedaConta(l.contaId)); // converteu em R$ -> data BR; senão, data pela moeda da conta
   const agr=ls=>{const tot={},pos={},neg={};ls.forEach(l=>{const{m,v}=_dvRel(r,l);tot[m]=(tot[m]||0)+v;if(v>0)pos[m]=(pos[m]||0)+v;else if(v<0)neg[m]=(neg[m]||0)+v;});const negAbs={};Object.keys(neg).forEach(m=>negAbs[m]=-neg[m]);return{tot,pos,negAbs};};
   const celL=l=>{const{m,v}=_dvRel(r,l);const f=moneyM(Math.abs(v),m);return es?`<td class="r num pos">${v>0?f:""}</td><td class="r num neg">${v<0?f:""}</td>`:`<td class="r num ${v>=0?'pos':'neg'}">${moneyM(v,m)}</td>`;};
   const celT=ls=>{const{tot,pos,negAbs}=agr(ls);return es?`<td class="r num pos">${_fmtMapRel(pos)}</td><td class="r num neg">${_fmtMapRel(negAbs)}</td>`:`<td class="r num ${_corTotRel(tot)}">${_fmtMapRel(tot)}</td>`;};
-  const linha=l=>`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td>${celL(l)}</tr>`;
+  const linha=l=>`<tr><td class="num">${dataLinha(l)}</td><td>${esc(l.descricao||"(sem descrição)")}</td><td style="color:var(--muted)">${esc(l.memo||"")}</td><td>${l.categoria?`<span class="tag ${l.valor>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td>${celL(l)}</tr>`;
   const nCols=es?6:5;
 
   let corpo="";
@@ -999,7 +1004,7 @@ function exportarRelatorioCSV(){
   const tot={}; // por moeda: {e,s}
   arr.forEach(l=>{const co=contaPorId(l.contaId)||{};const{m,v}=_dvRel(r,l);
     const g=tot[m]=tot[m]||{e:0,s:0};if(v>0)g.e+=v;else g.s+=v;
-    linhas.push([fmtData(l.data),l.descricao||"",l.memo||"",l.categoria||"",co.nome||"",instDe(co),titularDe(co),rot(m),statusLanc(l),v>0?num2(v):"",v<0?num2(v):""]);});
+    linhas.push([r.moeda==="real"?fmtData(l.data):fmtDataM(l.data,moedaConta(l.contaId)),l.descricao||"",l.memo||"",l.categoria||"",co.nome||"",instDe(co),titularDe(co),rot(m),statusLanc(l),v>0?num2(v):"",v<0?num2(v):""]);});
   Object.keys(tot).sort().forEach(m=>{linhas.push(["","","","","","","",rot(m),"TOTAL",num2(tot[m].e),num2(tot[m].s)]);});
   const csv=linhas.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
   baixar(`relatorio-${(r.titulo||"relatorio").replace(/[^\w]+/g,"_")}-${hojeISO()}.csv`,"﻿"+csv,"text/csv");
@@ -1063,18 +1068,20 @@ function renderExtrato(){
   let blocos="";
   contas.forEach(co=>{
     const cm=co.moeda||"BRL";
+    const dM=real?"BRL":cm; // data: converteu em R$ -> BR; senão, pela moeda da conta
     const fmt=v=>real?money(emReal(v,cm)):moneyM(v,cm);
+    const periodoCta=fmtPeriodoM(r,dM);
     const movs=_movsExtrato(co,r);
     let saldo=saldoContaAntes(co.id,r.de||null);const saldoIni=saldo;
     let totD=0,totC=0;
     const linhas=movs.map(l=>{const m=movContaRel(l,co.id);saldo+=m;if(m<0)totD+=-m;else totC+=m;
-      return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(_histLanc(l,co.id))}${l.memo?`<div style="font-size:11.5px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td><td>${l.categoria?`<span class="tag ${m>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td><td class="r num neg">${m<0?fmt(-m):""}</td><td class="r num pos">${m>0?fmt(m):""}</td><td class="r num ${saldo<0?'neg':''}">${fmt(saldo)}</td></tr>`;}).join("");
+      return`<tr><td class="num">${fmtDataM(l.data,dM)}</td><td>${esc(_histLanc(l,co.id))}${l.memo?`<div style="font-size:11.5px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td><td>${l.categoria?`<span class="tag ${m>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td><td class="r num neg">${m<0?fmt(-m):""}</td><td class="r num pos">${m>0?fmt(m):""}</td><td class="r num ${saldo<0?'neg':''}">${fmt(saldo)}</td></tr>`;}).join("");
     const saldoFim=saldo;
     blocos+=`<div class="panel">
-      <div class="panel-h"><div><h3>${esc(co.nome)}${cm==="USD"?" · US$":""}</h3><div style="font-size:12.5px;color:var(--muted)">${esc(r.titulo)} · ${periodo}${instDe(co)!=="Sem instituição"?" · "+esc(instDe(co)):""}${real&&cm==="USD"?" · convertido em R$":""}</div></div></div>
+      <div class="panel-h"><div><h3>${esc(co.nome)}${cm==="USD"?" · US$":""}</h3><div style="font-size:12.5px;color:var(--muted)">${esc(r.titulo)} · ${periodoCta}${instDe(co)!=="Sem instituição"?" · "+esc(instDe(co)):""}${real&&cm==="USD"?" · convertido em R$":""}</div></div></div>
       <div class="panel-b"><table><thead><tr><th>Data</th><th>Histórico</th><th>Categoria</th><th class="r">Débito</th><th class="r">Crédito</th><th class="r">Saldo</th></tr></thead>
         <tbody>
-          <tr class="subtotal"><td colspan="5" class="r">Saldo anterior${r.de?` (em ${fmtData(r.de)})`:""}</td><td class="r num ${saldoIni<0?'neg':''}">${fmt(saldoIni)}</td></tr>
+          <tr class="subtotal"><td colspan="5" class="r">Saldo anterior${r.de?` (em ${fmtDataM(r.de,dM)})`:""}</td><td class="r num ${saldoIni<0?'neg':''}">${fmt(saldoIni)}</td></tr>
           ${linhas||`<tr><td colspan="6" style="color:var(--muted);padding:12px 18px">Sem movimentação no período.</td></tr>`}
         </tbody>
         <tfoot>
@@ -1097,13 +1104,13 @@ function exportarExtratoCSV(){
   const num2=v=>(v===""||v==null)?"":Number(v).toFixed(2).replace(".",",");
   const linhas=[["Conta","Moeda","Data","Histórico","Categoria","Memo","Débito","Crédito","Saldo"]];
   contas.forEach(co=>{
-    const cm=co.moeda||"BRL";const rot=real?"R$":(cm==="USD"?"US$":"R$");const conv=v=>real?emReal(v,cm):v;
+    const cm=co.moeda||"BRL";const rot=real?"R$":(cm==="USD"?"US$":"R$");const conv=v=>real?emReal(v,cm):v;const dM=real?"BRL":cm;
     const movs=_movsExtrato(co,r);
     let saldo=saldoContaAntes(co.id,r.de||null);
-    linhas.push([co.nome,rot,r.de?fmtData(r.de):"",`Saldo anterior`,"","","","",num2(conv(saldo))]);
+    linhas.push([co.nome,rot,r.de?fmtDataM(r.de,dM):"",`Saldo anterior`,"","","","",num2(conv(saldo))]);
     let totD=0,totC=0;
     movs.forEach(l=>{const m=movContaRel(l,co.id);saldo+=m;if(m<0)totD+=-m;else totC+=m;
-      linhas.push([co.nome,rot,fmtData(l.data),_histLanc(l,co.id),l.categoria||"",l.memo||"",m<0?num2(conv(-m)):"",m>0?num2(conv(m)):"",num2(conv(saldo))]);});
+      linhas.push([co.nome,rot,fmtDataM(l.data,dM),_histLanc(l,co.id),l.categoria||"",l.memo||"",m<0?num2(conv(-m)):"",m>0?num2(conv(m)):"",num2(conv(saldo))]);});
     linhas.push([co.nome,rot,"","TOTAIS / Saldo final","","",num2(conv(totD)),num2(conv(totC)),num2(conv(saldo))]);
   });
   const csv=linhas.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");

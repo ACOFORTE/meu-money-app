@@ -249,8 +249,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.5";
-const APP_VERSION_DATA="23/11/2026 · novo formato Extrato bancário (Débito / Crédito / Saldo corrente) por conta, p/ contabilidade";
+const APP_VERSION="4.6";
+const APP_VERSION_DATA="23/11/2026 · categoria no extrato bancário e subtotal por mês no relatório";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -868,7 +868,7 @@ function vRelatorios(c,sub,ta){
      <div class="relgrid" style="margin-top:16px">
        <div class="field" style="margin:0"><label>Texto (contém no Memo)</label><input type="text" id="rTexto" value="${esc(p.texto||"")}" placeholder="ex.: orla 1, nota 123..."></div>
        <div class="field" style="margin:0"><label>Subtotal por</label><select id="rSubtotal">
-         ${[["nenhum","Nenhum"],["conta","Conta"],["instituicao","Instituição"],["titular","Titular"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
+         ${[["nenhum","Nenhum"],["mes","Mês"],["conta","Conta"],["instituicao","Instituição"],["titular","Titular"],["pagamento","Pagamento"],["categoria","Categoria"]].map(([v,n])=>`<option value="${v}" ${p.subtotal===v?"selected":""}>${n}</option>`).join("")}
        </select></div>
        <div class="field" style="margin:0"><label>Colunas de valor</label><select id="rColunas">
          ${[["unico","Valor único"],["es","Entradas e Saídas (separadas)"]].map(([v,n])=>`<option value="${v}" ${(p.colunas||"unico")===v?"selected":""}>${n}</option>`).join("")}
@@ -938,6 +938,7 @@ function lancsRelatorio(r){
 function chaveGrupoRel(l,subtotal){
   const co=contaPorId(l.contaId)||{};
   switch(subtotal){
+    case "mes": return mesDe(l.data)||"(sem data)";
     case "conta": return co.nome||"—";
     case "instituicao": return instDe(co);
     case "titular": return titularDe(co);
@@ -965,11 +966,12 @@ function renderRelatorio(){
     corpo=arr.map(linha).join("");
   }else{
     const grupos={};arr.forEach(l=>{const k=chaveGrupoRel(l,r.subtotal);(grupos[k]=grupos[k]||[]).push(l);});
+    const rotuloGrupo=k=>r.subtotal==="mes"&&/^\d{4}-\d{2}$/.test(k)?nomeMes(k):k;
     Object.keys(grupos).sort((a,b)=>a.localeCompare(b,"pt-BR")).forEach(k=>{
       const ls=grupos[k];
-      corpo+=`<tr class="grouphead"><td colspan="${nCols}">${esc(k)}</td></tr>`;
+      corpo+=`<tr class="grouphead"><td colspan="${nCols}">${esc(rotuloGrupo(k))}</td></tr>`;
       corpo+=ls.map(linha).join("");
-      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(k)}</td>${celT(ls)}</tr>`;
+      corpo+=`<tr class="subtotal"><td colspan="4" class="r">Subtotal — ${esc(rotuloGrupo(k))}</td>${celT(ls)}</tr>`;
     });
   }
   const cabVal=es?`<th class="r">Entrada</th><th class="r">Saída</th>`:`<th class="r">Valor</th>`;
@@ -1066,18 +1068,18 @@ function renderExtrato(){
     let saldo=saldoContaAntes(co.id,r.de||null);const saldoIni=saldo;
     let totD=0,totC=0;
     const linhas=movs.map(l=>{const m=movContaRel(l,co.id);saldo+=m;if(m<0)totD+=-m;else totC+=m;
-      return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(_histLanc(l,co.id))}${l.memo?`<div style="font-size:11.5px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td><td class="r num neg">${m<0?fmt(-m):""}</td><td class="r num pos">${m>0?fmt(m):""}</td><td class="r num ${saldo<0?'neg':''}">${fmt(saldo)}</td></tr>`;}).join("");
+      return`<tr><td class="num">${fmtData(l.data)}</td><td>${esc(_histLanc(l,co.id))}${l.memo?`<div style="font-size:11.5px;color:var(--muted)">${esc(l.memo)}</div>`:""}</td><td>${l.categoria?`<span class="tag ${m>=0?'g':'r'}">${esc(l.categoria)}</span>`:'<span style="color:var(--muted-soft)">—</span>'}</td><td class="r num neg">${m<0?fmt(-m):""}</td><td class="r num pos">${m>0?fmt(m):""}</td><td class="r num ${saldo<0?'neg':''}">${fmt(saldo)}</td></tr>`;}).join("");
     const saldoFim=saldo;
     blocos+=`<div class="panel">
       <div class="panel-h"><div><h3>${esc(co.nome)}${cm==="USD"?" · US$":""}</h3><div style="font-size:12.5px;color:var(--muted)">${esc(r.titulo)} · ${periodo}${instDe(co)!=="Sem instituição"?" · "+esc(instDe(co)):""}${real&&cm==="USD"?" · convertido em R$":""}</div></div></div>
-      <div class="panel-b"><table><thead><tr><th>Data</th><th>Histórico</th><th class="r">Débito</th><th class="r">Crédito</th><th class="r">Saldo</th></tr></thead>
+      <div class="panel-b"><table><thead><tr><th>Data</th><th>Histórico</th><th>Categoria</th><th class="r">Débito</th><th class="r">Crédito</th><th class="r">Saldo</th></tr></thead>
         <tbody>
-          <tr class="subtotal"><td colspan="4" class="r">Saldo anterior${r.de?` (em ${fmtData(r.de)})`:""}</td><td class="r num ${saldoIni<0?'neg':''}">${fmt(saldoIni)}</td></tr>
-          ${linhas||`<tr><td colspan="5" style="color:var(--muted);padding:12px 18px">Sem movimentação no período.</td></tr>`}
+          <tr class="subtotal"><td colspan="5" class="r">Saldo anterior${r.de?` (em ${fmtData(r.de)})`:""}</td><td class="r num ${saldoIni<0?'neg':''}">${fmt(saldoIni)}</td></tr>
+          ${linhas||`<tr><td colspan="6" style="color:var(--muted);padding:12px 18px">Sem movimentação no período.</td></tr>`}
         </tbody>
         <tfoot>
-          <tr class="subtotal"><td colspan="2" class="r">Totais do período</td><td class="r num neg">${fmt(totD)}</td><td class="r num pos">${fmt(totC)}</td><td></td></tr>
-          <tr class="subtotal" style="border-top:2px solid var(--ink)"><td colspan="4" class="r" style="font-size:14px">Saldo final</td><td class="r num ${saldoFim<0?'neg':''}" style="font-size:15px">${fmt(saldoFim)}</td></tr>
+          <tr class="subtotal"><td colspan="3" class="r">Totais do período</td><td class="r num neg">${fmt(totD)}</td><td class="r num pos">${fmt(totC)}</td><td></td></tr>
+          <tr class="subtotal" style="border-top:2px solid var(--ink)"><td colspan="5" class="r" style="font-size:14px">Saldo final</td><td class="r num ${saldoFim<0?'neg':''}" style="font-size:15px">${fmt(saldoFim)}</td></tr>
         </tfoot>
       </table></div></div>`;
   });
@@ -1093,16 +1095,16 @@ function exportarExtratoCSV(){
   const contas=contasVisiveis().filter(co=>!r.contas||r.contas.includes(co.id));
   if(!contas.length){alert("Selecione pelo menos uma conta.");return;}
   const num2=v=>(v===""||v==null)?"":Number(v).toFixed(2).replace(".",",");
-  const linhas=[["Conta","Moeda","Data","Histórico","Memo","Débito","Crédito","Saldo"]];
+  const linhas=[["Conta","Moeda","Data","Histórico","Categoria","Memo","Débito","Crédito","Saldo"]];
   contas.forEach(co=>{
     const cm=co.moeda||"BRL";const rot=real?"R$":(cm==="USD"?"US$":"R$");const conv=v=>real?emReal(v,cm):v;
     const movs=_movsExtrato(co,r);
     let saldo=saldoContaAntes(co.id,r.de||null);
-    linhas.push([co.nome,rot,r.de?fmtData(r.de):"",`Saldo anterior`,"","","",num2(conv(saldo))]);
+    linhas.push([co.nome,rot,r.de?fmtData(r.de):"",`Saldo anterior`,"","","","",num2(conv(saldo))]);
     let totD=0,totC=0;
     movs.forEach(l=>{const m=movContaRel(l,co.id);saldo+=m;if(m<0)totD+=-m;else totC+=m;
-      linhas.push([co.nome,rot,fmtData(l.data),_histLanc(l,co.id),l.memo||"",m<0?num2(conv(-m)):"",m>0?num2(conv(m)):"",num2(conv(saldo))]);});
-    linhas.push([co.nome,rot,"","TOTAIS / Saldo final","",num2(conv(totD)),num2(conv(totC)),num2(conv(saldo))]);
+      linhas.push([co.nome,rot,fmtData(l.data),_histLanc(l,co.id),l.categoria||"",l.memo||"",m<0?num2(conv(-m)):"",m>0?num2(conv(m)):"",num2(conv(saldo))]);});
+    linhas.push([co.nome,rot,"","TOTAIS / Saldo final","","",num2(conv(totD)),num2(conv(totC)),num2(conv(saldo))]);
   });
   const csv=linhas.map(row=>row.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
   baixar(`extrato-${(r.titulo||"extrato").replace(/[^\w]+/g,"_")}-${hojeISO()}.csv`,"﻿"+csv,"text/csv");

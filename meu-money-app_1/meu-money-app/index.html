@@ -249,8 +249,8 @@
 <script>
 /* ============ Estado ============ */
 const KEY="caderneta_v1";
-const APP_VERSION="4.7";
-const APP_VERSION_DATA="23/11/2026 · datas do relatório conforme a moeda: contas US$ em mm/dd/aaaa e R$ em dd/mm/aaaa";
+const APP_VERSION="4.8";
+const APP_VERSION_DATA="23/11/2026 · período do relatório digitado em dd/mm/aaaa (formato brasileiro)";
 const CAT_PADRAO=[
   {nome:"Salário",tipo:"receita"},{nome:"Outras receitas",tipo:"receita"},{nome:"Rendimentos",tipo:"receita"},
   {nome:"Alimentação",tipo:"despesa"},{nome:"Mercado",tipo:"despesa"},{nome:"Transporte",tipo:"despesa"},
@@ -848,8 +848,8 @@ function vRelatorios(c,sub,ta){
    <div class="panel no-print"><div class="panel-h"><h3>Personalizar relatório</h3></div><div class="panel-b pad">
      <div class="field"><label>Título</label><input type="text" id="rTitulo" value="${esc(p.titulo||"Relatório")}"></div>
      <div class="relgrid">
-       <div class="field" style="margin:0"><label>Período — de</label><input type="date" id="rDe" value="${p.de||""}"></div>
-       <div class="field" style="margin:0"><label>Período — até</label><input type="date" id="rAte" value="${p.ate||""}"></div>
+       <div class="field" style="margin:0"><label>Período — de (dd/mm/aaaa)</label><input type="text" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa" id="rDe" value="${p.de?fmtData(p.de):""}" oninput="mascaraDataBR(this)"></div>
+       <div class="field" style="margin:0"><label>Período — até (dd/mm/aaaa)</label><input type="text" inputmode="numeric" maxlength="10" placeholder="dd/mm/aaaa" id="rAte" value="${p.ate?fmtData(p.ate):""}" oninput="mascaraDataBR(this)"></div>
      </div>
      <div style="font-size:12px;color:var(--muted);margin:6px 0 16px">Deixe as datas em branco para incluir todo o período.</div>
 
@@ -903,12 +903,16 @@ function filtrarChecklistPag(q){
   q=(q||"").toLowerCase();
   document.querySelectorAll("#listaPag label").forEach(l=>{l.style.display=l.textContent.toLowerCase().includes(q)?"flex":"none";});
 }
+/* máscara dd/mm/aaaa enquanto digita (só números, barras automáticas) */
+function mascaraDataBR(el){let v=el.value.replace(/\D/g,"").slice(0,8);if(v.length>=5)v=v.slice(0,2)+"/"+v.slice(2,4)+"/"+v.slice(4);else if(v.length>=3)v=v.slice(0,2)+"/"+v.slice(2);el.value=v;}
+/* converte "dd/mm/aaaa" (ou dd/mm/aa) para o formato interno aaaa-mm-dd; vazio/ inválido => "" */
+function parseDataBR(s){s=(s||"").trim();if(!s)return "";const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(!m)return "";let d=m[1].padStart(2,"0"),mo=m[2].padStart(2,"0"),y=m[3];if(y.length===2)y="20"+y;const iso=`${y}-${mo}-${d}`;const dt=new Date(iso+"T00:00:00");if(isNaN(dt.getTime())||+mo<1||+mo>12||+d<1||+d>31)return "";return iso;}
 function lerConfigRel(){
   const sel=cls=>{const all=[...document.querySelectorAll("."+cls)];const chk=all.filter(c=>c.checked).map(c=>c.value);return chk.length===all.length?null:chk;};// null = todos
   return{
     titulo:document.getElementById("rTitulo").value.trim()||"Relatório",
-    de:document.getElementById("rDe").value,
-    ate:document.getElementById("rAte").value,
+    de:parseDataBR(document.getElementById("rDe").value),
+    ate:parseDataBR(document.getElementById("rAte").value),
     contas:sel("chk-conta"),
     categorias:sel("chk-cat"),
     pagamentos:sel("chk-pag"),
